@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>YomuYomu - 日语原著阅读器</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Zen+Old+Mincho:wght@400;700&family=Noto+Serif+JP:wght@400;700&family=Shippori+Mincho:wght@400;700&family=M+PLUS+1p:wght@400;700&family=M+PLUS+Rounded+1c:wght@400;700&family=Outfit:wght@300;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="noise-bg" aria-hidden="true"></div>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">JP Reader</p>
+        <h1>YomuYomu 日语原著阅读器</h1>
+        <div id="apiStatus" class="api-status status-badges" aria-live="polite">
+          <span class="status-chip">API 检测中...</span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <label class="file-btn">
+          导入 TXT/EPUB/PDF/MOBI
+          <input
+            id="fileInput"
+            type="file"
+            accept=".txt,.epub,.pdf,.mobi,text/plain,application/epub+zip,application/pdf"
+          />
+        </label>
+        <button id="loadSampleBtn" class="secondary-btn">载入示例文本</button>
+        <input
+          id="userIdInput"
+          class="user-input"
+          type="text"
+          value="demo-user"
+          placeholder="云同步用户ID"
+        />
+        <button id="pullSyncBtn" class="secondary-btn">云端拉取</button>
+        <button id="pushSyncBtn" class="secondary-btn">云端上传</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="left-panel">
+        <section class="card book-card">
+          <h3>书籍信息</h3>
+          <p id="bookTitle" class="book-title">未导入书籍</p>
+          <p id="bookMeta" class="meta">格式: -</p>
+          <p id="chapterCount" class="meta">章节: 0</p>
+          <button id="addBookmarkBtn">添加书签</button>
+          <p id="statusText" class="status-text">就绪</p>
+        </section>
+
+        <section class="card toc-card">
+          <h3>章节目录</h3>
+          <ul id="chapterList" class="simple-list"></ul>
+        </section>
+
+        <section class="card bookmarks-card">
+          <h3>书签</h3>
+          <ul id="bookmarkList" class="simple-list"></ul>
+        </section>
+
+        <section class="card notes-list-card">
+          <h3>批注</h3>
+          <ul id="noteList" class="simple-list"></ul>
+        </section>
+      </aside>
+
+      <section class="reader-panel">
+        <div class="panel-head">
+          <div>
+            <h2 id="chapterTitle">阅读区</h2>
+            <p id="chapterProgress" class="meta">章节 0 / 0</p>
+          </div>
+          <div class="page-actions">
+            <button id="prevPageBtn" class="secondary-btn">上一页</button>
+            <button id="nextPageBtn" class="secondary-btn">下一页</button>
+            <button id="toggleAutoPageBtn" class="secondary-btn">自动翻页: 关</button>
+            <button id="toggleFocusBtn" class="secondary-btn">专注模式: 关</button>
+          </div>
+          <div class="stats-inline">
+            <span>查词: <strong id="lookupCount">0</strong></span>
+            <span>阅读时长: <strong id="readingTime">00:00</strong></span>
+            <span>待复习: <strong id="dueCount">0</strong></span>
+          </div>
+        </div>
+        <article id="readerContent" class="reader-content" aria-live="polite">
+          <p class="empty-tip">先导入书籍，开始阅读。</p>
+        </article>
+      </section>
+
+      <aside class="right-panel">
+        <div id="rightTabs" class="card right-tabs" role="tablist" aria-label="侧栏视图切换">
+          <button class="tab-btn active" data-tab="lookup" role="tab" aria-selected="true">查词</button>
+          <button class="tab-btn" data-tab="vocab" role="tab" aria-selected="false">生词本</button>
+          <button class="tab-btn" data-tab="notes" role="tab" aria-selected="false">批注</button>
+          <button class="tab-btn" data-tab="stats" role="tab" aria-selected="false">统计</button>
+        </div>
+
+        <div class="right-panes">
+          <div class="right-pane active" data-pane="lookup">
+            <section class="card lookup-card">
+              <h3>点词释义</h3>
+              <p id="selectedWord" class="selected-word">未选中</p>
+              <p id="selectedLemma" class="meta">原形: -</p>
+              <p id="selectedReading" class="meta">读音: -</p>
+              <p id="selectedPos" class="meta">词性: -</p>
+              <p id="selectedMeaning" class="meaning">
+                在阅读区拖选要查询的文字，或直接点击已标注的 N1/N2/N3 词。
+              </p>
+              <p id="selectedExample" class="example-sentence">例句: -</p>
+              <div class="lookup-actions">
+                <button id="addWordBtn">加入生词本</button>
+                <button id="addNoteBtn">为该词批注</button>
+                <a
+                  id="dictLink"
+                  href="https://www.mojidict.com"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  class="ghost-link"
+                  >在 MOJi（日版）中查</a
+                >
+                <a
+                  id="macDictLink"
+                  href="#"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  class="ghost-link"
+                  hidden
+                  >在 mac 词典中查</a
+                >
+              </div>
+            </section>
+          </div>
+
+          <div class="right-pane" data-pane="vocab">
+            <section class="card vocab-card">
+              <div class="vocab-head">
+                <h3>生词本</h3>
+                <button id="exportBtn" class="secondary-btn small">导出 CSV</button>
+              </div>
+              <ul id="vocabList" class="vocab-list"></ul>
+            </section>
+          </div>
+
+          <div class="right-pane" data-pane="notes">
+            <section class="card note-editor-card">
+              <h3>批注编辑</h3>
+              <p id="noteEditorTarget" class="meta">未选中词</p>
+              <textarea
+                id="noteInput"
+                rows="3"
+                placeholder="写下语法点、场景含义、记忆联想..."
+              ></textarea>
+              <div class="lookup-actions">
+                <button id="saveNoteBtn">保存批注</button>
+                <button id="clearNoteBtn" class="secondary-btn">清空</button>
+              </div>
+            </section>
+          </div>
+
+          <div class="right-pane" data-pane="stats">
+            <section class="card hardwords-card">
+              <div class="vocab-head">
+                <h3>难词速览（当前章节）</h3>
+                <button id="refreshHardWordsBtn" class="secondary-btn small">刷新</button>
+              </div>
+              <ul id="hardWordList" class="simple-list"></ul>
+            </section>
+
+            <section class="card freq-card">
+              <h3>词频统计（全书）</h3>
+              <p id="freqSummary" class="meta">等待分析...</p>
+              <ul id="freqList" class="simple-list"></ul>
+            </section>
+          </div>
+        </div>
+
+        <section class="card tts-card">
+          <h3>TTS 朗读</h3>
+          <label for="ttsVoiceSelect">语音</label>
+          <select id="ttsVoiceSelect"></select>
+          <label for="ttsRateRange">语速</label>
+          <input id="ttsRateRange" type="range" min="0.6" max="1.4" step="0.1" />
+          <div class="lookup-actions">
+            <button id="ttsPlayBtn">朗读当前章节</button>
+            <button id="ttsStopBtn" class="secondary-btn">停止朗读</button>
+          </div>
+        </section>
+
+        <section class="card settings-card">
+          <h3>阅读设置</h3>
+          <p class="meta">难度标注：N1 红色、N2 黄虚线、N3 绿色下划线。</p>
+          <label for="difficultyModeSelect">难度标注模式</label>
+          <select id="difficultyModeSelect">
+            <option value="n1n2n3">N1 + N2 + N3</option>
+            <option value="n1n2">N1 + N2</option>
+            <option value="n1">仅 N1</option>
+            <option value="off">关闭</option>
+          </select>
+          <label for="mojiSchemeSelect">MOJi 调用版本</label>
+          <select id="mojiSchemeSelect">
+            <option value="jp">日版（mojisho://）</option>
+            <option value="en">英版（mojishoen4cn://）</option>
+          </select>
+          <label for="autoPageSecondsRange">自动翻页间隔（秒）</label>
+          <input id="autoPageSecondsRange" type="range" min="6" max="40" step="1" />
+          <p id="autoPageSecondsText" class="meta">12 秒 / 页</p>
+          <label for="fontSizeRange">字号</label>
+          <input id="fontSizeRange" type="range" min="16" max="32" step="1" />
+          <label for="lineHeightRange">行距</label>
+          <input
+            id="lineHeightRange"
+            type="range"
+            min="1.4"
+            max="2.4"
+            step="0.1"
+          />
+          <label for="readerFontSelect">正文字体</label>
+          <select id="readerFontSelect">
+            <option value="mincho">经典明朝（Zen Old Mincho）</option>
+            <option value="noto">Noto Serif JP</option>
+            <option value="shippori">Shippori Mincho</option>
+            <option value="gothic">M PLUS 1p（黑体）</option>
+            <option value="rounded">M PLUS Rounded 1c（圆体）</option>
+          </select>
+        </section>
+
+      </aside>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
