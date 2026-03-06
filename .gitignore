@@ -1,5 +1,8 @@
 backend/data/*.db
+backend/data/JMdict_e
+backend/data/JMdict_e.gz
 backend/data/jlpt_levels.json
 backend/data/cloud/*.json
+backend/data/*.log
 __pycache__/
 *.pyc

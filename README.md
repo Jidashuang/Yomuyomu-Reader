@@ -63,7 +63,19 @@ python3 -m pip install -r backend/requirements.txt
 
 ## 4. 构建 JMDict 词典库
 
-先准备 JMDict XML（推荐最新 `JMdict.xml`），然后执行：
+推荐新手直接用内置脚本下载（会保存到 `backend/data/JMdict_e`）：
+
+```bash
+python3 backend/download_jmdict.py
+```
+
+然后执行构建：
+
+```bash
+python3 backend/build_jmdict_db.py --xml backend/data/JMdict_e
+```
+
+如果你已经有自己的 JMDict 源文件，也可以直接指定路径：
 
 ```bash
 python3 backend/build_jmdict_db.py --xml /path/to/JMdict_e.xml
@@ -76,6 +88,7 @@ python3 backend/build_jmdict_db.py --xml /path/to/JMdict_e.xml
 服务启动后会自动检测该库并启用查询。
 
 说明：
+- `backend/data/JMdict_e` 文件较大（~60MB），已默认加入 `.gitignore`，不会再上传到 GitHub。
 - 若使用 `JMdict_e.xml`，通常只有英文释义（前端会标注为 `英释`）。
 - 构建脚本已支持提取 `gloss_zh`（若源 XML 含中文释义，会优先显示中文）。
 
