@@ -1,0 +1,12 @@
+.git
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+backend/__pycache__/
+backend/data/cloud/
+backend/data/*.log
+backend/data/JMdict_e
+backend/data/JMdict_e.gz
+backend/data/*.db

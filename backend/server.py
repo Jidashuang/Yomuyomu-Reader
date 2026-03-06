@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import posixpath
 import re
 import shutil
@@ -663,8 +664,13 @@ def run_server(host: str, port: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run YomuYomu backend server.")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
+    default_host = os.getenv("HOST", "0.0.0.0").strip() or "0.0.0.0"
+    try:
+        default_port = int(os.getenv("PORT", "8000"))
+    except ValueError:
+        default_port = 8000
+    parser.add_argument("--host", default=default_host)
+    parser.add_argument("--port", type=int, default=default_port)
     args = parser.parse_args()
     run_server(args.host, args.port)
 

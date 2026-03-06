@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: yomuyomu-reader
+    runtime: docker
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /api/health

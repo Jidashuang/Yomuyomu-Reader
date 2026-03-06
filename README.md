@@ -50,7 +50,30 @@ python3 backend/server.py --host 127.0.0.1 --port 8000
 - 前端静态页面和 API 由同一个服务提供。
 - 如果只用 `python3 -m http.server`，前端仍可跑，但 `EPUB/PDF/MOBI`、云同步、后端词典能力不可用。
 
-## 3. 可选依赖安装
+## 3. 让别人直接访问（Render 免费部署）
+
+这个项目不是“只能你自己本机跑”的玩具。  
+只要部署到云端，别人打开一个网址就能用你的阅读器。
+
+本仓库已准备好部署文件：
+- `Dockerfile`
+- `render.yaml`
+- `backend/requirements-deploy.txt`
+
+按下面步骤做即可：
+
+1. 把最新代码推到 GitHub（你已经做过这一步）。
+2. 打开 [Render](https://render.com) 并用 GitHub 登录。
+3. 进入 `New +` -> `Web Service` -> 选择你的仓库 `Jidashuang/Yomuyomu-Reader`。
+4. Render 会自动识别 `Dockerfile`，保持默认配置，点击 `Create Web Service`。
+5. 等待部署完成后，会得到一个公网地址，例如 `https://xxx.onrender.com`。
+6. 把这个网址发给别人，别人直接打开就能使用。
+
+说明（免费版常见现象）：
+- 首次打开可能要等几十秒（冷启动）。
+- 当前“云同步”仍是本地文件方案，免费容器重启后可能丢失同步数据。
+
+## 4. 可选依赖安装
 
 ```bash
 python3 -m pip install -r backend/requirements.txt
@@ -61,7 +84,7 @@ python3 -m pip install -r backend/requirements.txt
 - `fugashi` + `unidic-lite`：MeCab 路线
 - `pypdf`：PDF 文本提取
 
-## 4. 构建 JMDict 词典库
+## 5. 构建 JMDict 词典库
 
 推荐新手直接用内置脚本下载（会保存到 `backend/data/JMdict_e`）：
 
@@ -92,7 +115,7 @@ python3 backend/build_jmdict_db.py --xml /path/to/JMdict_e.xml
 - 若使用 `JMdict_e.xml`，通常只有英文释义（前端会标注为 `英释`）。
 - 构建脚本已支持提取 `gloss_zh`（若源 XML 含中文释义，会优先显示中文）。
 
-## 5. 导入能力说明
+## 6. 导入能力说明
 
 - `TXT`：前后端都支持
 - `EPUB`：后端纯 Python 解析（zip + OPF + spine）
@@ -103,7 +126,7 @@ python3 backend/build_jmdict_db.py --xml /path/to/JMdict_e.xml
 
 `ebook-convert`
 
-## 6. 云同步说明
+## 7. 云同步说明
 
 当前为单机演示版云同步：
 
@@ -113,7 +136,7 @@ python3 backend/build_jmdict_db.py --xml /path/to/JMdict_e.xml
 
 后续可替换为真实用户系统和对象存储/数据库。
 
-## 7. JLPT 难度词表（必需）
+## 8. JLPT 难度词表（必需）
 
 前端会尝试加载：
 
@@ -179,7 +202,7 @@ python3 backend/import_jlpt_levels.py \
   --level-col nlevel
 ```
 
-## 8. 后续增强建议
+## 9. 后续增强建议
 
 1. 引入认证（JWT/OAuth）与多端冲突解决策略。
 2. 加入段落级进度同步、阅读历史回放。
