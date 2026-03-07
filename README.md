@@ -49,6 +49,7 @@ python3 backend/server.py --host 127.0.0.1 --port 8000
 说明：
 - 前端静态页面和 API 由同一个服务提供。
 - 如果只用 `python3 -m http.server`，前端仍可跑，但 `EPUB/PDF/MOBI`、云同步、后端词典能力不可用。
+- 服务启动时会自动读取项目根目录 `.env`（若存在）。
 
 ## 3. 让别人直接访问（Render 免费部署）
 
@@ -83,6 +84,8 @@ python3 -m pip install -r backend/requirements.txt
 - `sudachipy` + `sudachidict_core`：分词和词形还原（推荐）
 - `fugashi` + `unidic-lite`：MeCab 路线
 - `pypdf`：PDF 文本提取
+- `requests`：Stripe Checkout / Webhook 调用
+- `cryptography`：微信/支付宝官方网关签名与验签（未安装则自动回退模板支付模式）
 
 ## 5. 构建 JMDict 词典库
 
@@ -122,9 +125,39 @@ python3 backend/build_jmdict_db.py --xml /path/to/JMdict_e.xml
 - `PDF`：后端 `pypdf` 解析
 - `MOBI`：后端调用 Calibre `ebook-convert` 转 `EPUB` 再解析
 
+四种格式现在都会统一输出 `NormalizedBook`：
+
+```json
+{
+  "title": "Book title",
+  "format": "epub",
+  "chapterCount": 12,
+  "normalizedVersion": 1,
+  "sourceFileName": "demo.epub",
+  "chapters": [
+    {
+      "id": "ch-1",
+      "index": 0,
+      "title": "Chapter 1",
+      "text": "段落一\n\n段落二",
+      "paragraphs": ["段落一", "段落二"],
+      "sourceType": "epub-spine",
+      "sourceRef": "OEBPS/chapter1.xhtml"
+    }
+  ]
+}
+```
+
 如果 `MOBI` 报错，请先安装 Calibre 并确保命令行可执行：
 
 `ebook-convert`
+
+## 6.1 AI 句子解释
+
+- 接口：`POST /api/ai/explain`
+- 仅支持单句输入：`{"sentence":"..."}`
+- 返回包含 `explanation`、`cached` 和 `stats`
+- 不影响原有 `/api/dict/lookup` 点词流程
 
 ## 7. 云同步说明
 
@@ -208,3 +241,183 @@ python3 backend/import_jlpt_levels.py \
 2. 加入段落级进度同步、阅读历史回放。
 3. 增加 AI 句法解析、难句改写、上下文释义。
 4. 将批注/词本导出为 Anki 兼容格式。
+
+## 10. 商业化（第一阶段 + 第二阶段）
+
+当前版本已完成：
+
+- 第一阶段：Free / Pro 功能门禁（服务端强制）
+- 第二阶段：Stripe Checkout 订阅 + 微信/支付宝订单流 + 支付回调 + 套餐自动开通
+
+### 10.1 套餐能力
+
+- Free：
+  - 仅支持 `TXT` 导入
+  - 禁用云同步
+  - 生词 CSV 导出条数受限
+- Pro：
+  - 支持 `TXT/EPUB/PDF/MOBI` 导入
+  - 开启云同步
+  - 生词 CSV 可全量导出
+
+### 10.2 计费接口
+
+- 查询套餐：`GET /api/billing/plan?userId=...`
+- Stripe 创建 Checkout Session：`POST /api/billing/create-checkout-session`
+- Stripe 成功回跳验单：`POST /api/billing/checkout-complete`
+- Stripe 创建管理页会话：`POST /api/billing/create-portal-session`
+- Stripe Webhook：`POST /api/billing/stripe/webhook`
+- 创建支付订单：`POST /api/billing/create-order`
+- 查询订单状态：`GET /api/billing/order-status?orderId=...&userId=...`
+- 微信支付通知：`POST /api/billing/wechat/notify`
+- 支付宝支付通知：`POST /api/billing/alipay/notify`
+- 手动确认到账（可选）：`POST /api/billing/confirm-paid`
+
+说明：
+- Stripe 订阅推荐走 `create-checkout-session` + `checkout-complete`，前端会跳转到 Stripe Hosted Checkout。
+- `create-order` 仍保留给微信/支付宝流程。
+- 当官方网关参数完整时，`create-order` 会优先返回官方支付链接（微信 Native / 支付宝 Page Pay）。
+- 当官方网关参数不完整时，自动回退到 `WECHAT_PAY_ENTRY_URL` / `ALIPAY_PAY_ENTRY_URL` 模板跳转模式。
+
+可选（仅管理员/本地调试）：
+- 手动切换套餐：`POST /api/billing/set-plan`
+
+### 10.3 必要环境变量
+
+```bash
+# 价格和时长
+PRO_PRICE_CNY=39
+PRO_PLAN_DAYS=31
+PAY_ORDER_EXPIRE_MINUTES=30
+
+# 支付渠道开关（1=开启，0=关闭）
+STRIPE_PAY_ENABLED=1
+WECHAT_PAY_ENABLED=1
+ALIPAY_PAY_ENABLED=1
+
+# Stripe 订阅（推荐）
+STRIPE_SECRET_KEY=sk_live_or_test_xxx
+STRIPE_PRICE_ID_MONTHLY=price_xxx
+STRIPE_PRICE_ID_YEARLY=price_xxx
+STRIPE_SUCCESS_URL=https://your-domain.com/
+STRIPE_CANCEL_URL=https://your-domain.com/
+STRIPE_PORTAL_RETURN_URL=https://your-domain.com/
+STRIPE_WEBHOOK_SECRET=whsec_xxx
+STRIPE_WEBHOOK_TOLERANCE_SECONDS=300
+
+# 可选：支付跳转链接模板（支持占位符 {orderId} {userId} {channel}）
+WECHAT_PAY_ENTRY_URL=https://your-wechat-pay-page.example.com/pay?oid={orderId}
+ALIPAY_PAY_ENTRY_URL=https://your-alipay-pay-page.example.com/pay?oid={orderId}
+```
+
+可选：
+
+```bash
+# ---- 微信官方支付（可选，启用后 create-order 走官方签名下单）----
+WECHAT_APP_ID=wx_appid
+WECHAT_MCH_ID=wechat_merchant_id
+WECHAT_MCH_SERIAL=merchant_cert_serial_no
+# 二选一：直接填 PEM 内容或给文件路径
+WECHAT_MCH_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+WECHAT_MCH_PRIVATE_KEY_PATH=/etc/keys/wechat_mch_private_key.pem
+WECHAT_PLATFORM_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"
+WECHAT_PLATFORM_PUBLIC_KEY_PATH=/etc/keys/wechat_platform_public_key.pem
+WECHAT_API_V3_KEY=32_bytes_api_v3_key
+WECHAT_NOTIFY_URL=https://your-domain.com/api/billing/wechat/notify
+WECHAT_PAY_API_BASE=https://api.mch.weixin.qq.com
+
+# ---- 支付宝官方支付（可选，启用后 create-order 走官方签名下单）----
+ALIPAY_APP_ID=your_alipay_app_id
+ALIPAY_GATEWAY=https://openapi.alipay.com/gateway.do
+# 二选一：直接填 PEM 内容或给文件路径
+ALIPAY_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+ALIPAY_PRIVATE_KEY_PATH=/etc/keys/alipay_private_key.pem
+ALIPAY_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"
+ALIPAY_PUBLIC_KEY_PATH=/etc/keys/alipay_public_key.pem
+ALIPAY_NOTIFY_URL=https://your-domain.com/api/billing/alipay/notify
+ALIPAY_RETURN_URL=https://your-domain.com/?billing=success
+
+# 支付通知令牌（网关/回调转发时建议开启）
+BILLING_NOTIFY_TOKEN=your_notify_token
+
+# 允许前端“我已支付”按钮直接确认到账（演示环境可开，生产建议关）
+BILLING_ALLOW_MANUAL_PAYMENT_CONFIRM=0
+
+# 默认 0（禁用手动改套餐）
+BILLING_ALLOW_MANUAL_PLAN_CHANGE=0
+
+# 开启手动改套餐后可再加管理员令牌
+BILLING_ADMIN_TOKEN=your_admin_token
+```
+
+### 10.4 Webhook 配置建议（Stripe / 微信 / 支付宝）
+
+回调入口：
+
+- `POST https://your-domain.com/api/billing/stripe/webhook`
+- `POST https://your-domain.com/api/billing/wechat/notify`
+- `POST https://your-domain.com/api/billing/alipay/notify`
+
+关键校验：
+
+- Stripe：校验 `Stripe-Signature`（`STRIPE_WEBHOOK_SECRET`）。
+- 微信：校验 `Wechatpay-*` 头并解密 `resource`。
+- 支付宝：校验 `sign`（RSA2）。
+
+### 10.5 快速配置 Stripe（本地）
+
+1. 复制模板并填写：
+
+```bash
+cp .env.example .env
+```
+
+2. 至少填写这些变量：
+
+- `STRIPE_PAY_ENABLED=1`
+- `STRIPE_SECRET_KEY`
+- `STRIPE_PRICE_ID_MONTHLY`（可选再配 `STRIPE_PRICE_ID_YEARLY`）
+- `STRIPE_WEBHOOK_SECRET`
+
+3. 在 Stripe Dashboard 把 webhook 指向：
+
+`http://127.0.0.1:8000/api/billing/stripe/webhook`
+
+4. 启动服务：
+
+```bash
+python3 backend/server.py --host 127.0.0.1 --port 8000
+```
+
+5. 前端点击“订阅 Pro”后会跳转到 Stripe Checkout，支付回跳后自动验单开通。
+
+### 10.6 快速配置你的微信/支付宝（本地）
+
+1. 复制模板并填写：
+
+```bash
+cp .env.example .env
+```
+
+2. 把证书/密钥文件放到目录：
+
+`backend/keys/`
+
+3. 在 `.env` 填写这 4 个路径（推荐路径模式，不直接写 PEM 到 env）：
+
+- `WECHAT_MCH_PRIVATE_KEY_PATH`
+- `WECHAT_PLATFORM_PUBLIC_KEY_PATH`
+- `ALIPAY_PRIVATE_KEY_PATH`
+- `ALIPAY_PUBLIC_KEY_PATH`
+
+4. 启动服务：
+
+```bash
+python3 backend/server.py --host 127.0.0.1 --port 8000
+```
+
+5. 检查是否生效：
+
+- 打开 `GET /api/health`
+- 看 `officialGateway.wechat.order/notify` 与 `officialGateway.alipay.order/notify`
+- 都为 `true` 说明官方网关配置完整

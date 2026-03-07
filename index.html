@@ -15,9 +15,15 @@
   <body>
     <div class="noise-bg" aria-hidden="true"></div>
     <header class="app-header">
-      <div>
-        <p class="eyebrow">JP Reader</p>
+      <div class="hero-copy">
+        <p class="eyebrow">Read Japanese Faster</p>
         <h1>YomuYomu 日语原著阅读器</h1>
+        <p class="hero-subtitle">打开首页就进入 sample 阅读，先试读，再决定是否注册升级。</p>
+        <ul class="hero-benefits">
+          <li>JLPT 颜色标注</li>
+          <li>点词即查</li>
+          <li>句子级 AI explain</li>
+        </ul>
         <div id="apiStatus" class="api-status status-badges" aria-live="polite">
           <span class="status-chip">API 检测中...</span>
         </div>
@@ -31,14 +37,11 @@
             accept=".txt,.epub,.pdf,.mobi,text/plain,application/epub+zip,application/pdf"
           />
         </label>
-        <button id="loadSampleBtn" class="secondary-btn">载入示例文本</button>
-        <input
-          id="userIdInput"
-          class="user-input"
-          type="text"
-          value="demo-user"
-          placeholder="云同步用户ID"
-        />
+        <button id="loadSampleBtn" class="secondary-btn" data-testid="import-sample-btn">导入示例书</button>
+        <span id="accountModeLabel" class="account-chip">游客模式</span>
+        <input id="registerAccountInput" class="user-input" type="text" value="" placeholder="注册账号 ID" />
+        <button id="registerAccountBtn" class="secondary-btn">注册账号</button>
+        <input id="userIdInput" class="user-input" type="text" value="" placeholder="当前账号" />
         <button id="pullSyncBtn" class="secondary-btn">云端拉取</button>
         <button id="pushSyncBtn" class="secondary-btn">云端上传</button>
       </div>
@@ -57,7 +60,7 @@
 
         <section class="card toc-card">
           <h3>章节目录</h3>
-          <ul id="chapterList" class="simple-list"></ul>
+          <ul id="chapterList" class="simple-list" data-testid="chapter-list"></ul>
         </section>
 
         <section class="card bookmarks-card">
@@ -88,13 +91,55 @@
             <span>阅读时长: <strong id="readingTime">00:00</strong></span>
             <span>待复习: <strong id="dueCount">0</strong></span>
           </div>
+          <div class="feedback-actions">
+            <button id="reportIssueBtn" class="secondary-btn small">报告问题</button>
+            <button id="sendFeedbackBtn" class="secondary-btn small">发送反馈</button>
+          </div>
         </div>
-        <article id="readerContent" class="reader-content" aria-live="polite">
+        <article id="readerContent" class="reader-content" aria-live="polite" data-testid="reader-content">
           <p class="empty-tip">先导入书籍，开始阅读。</p>
         </article>
       </section>
 
       <aside class="right-panel">
+        <section class="card plan-card">
+          <div class="plan-head">
+            <h3>套餐</h3>
+            <span id="planLabel" class="plan-pill free">FREE</span>
+          </div>
+          <p id="planHint" class="meta">Free：仅 TXT 导入，云同步与全量导出需升级。</p>
+          <ul id="planBenefitList" class="plan-benefit-list">
+            <li>
+              <span>高级导入（EPUB/PDF/MOBI）</span>
+              <strong id="benefitAdvancedImport">未开通</strong>
+            </li>
+            <li>
+              <span>云同步（多设备）</span>
+              <strong id="benefitCloudSync">未开通</strong>
+            </li>
+            <li>
+              <span>生词 CSV 导出额度</span>
+              <strong id="benefitCsvLimit">60 条</strong>
+            </li>
+          </ul>
+          <label for="payChannelSelect">支付渠道</label>
+          <select id="payChannelSelect">
+            <option value="stripe">Stripe（银行卡）</option>
+            <option value="wechat">微信支付</option>
+            <option value="alipay">支付宝</option>
+          </select>
+          <label for="billingIntervalSelect">订阅周期</label>
+          <select id="billingIntervalSelect">
+            <option value="monthly">月付</option>
+            <option value="yearly">年付</option>
+          </select>
+          <div class="lookup-actions">
+            <button id="upgradeProBtn">订阅 Pro</button>
+            <button id="manageBillingBtn" class="secondary-btn">管理订阅</button>
+          </div>
+          <p id="billingFlowHint" class="meta">Stripe 默认自动续费，可随时在管理页取消。</p>
+        </section>
+
         <div id="rightTabs" class="card right-tabs" role="tablist" aria-label="侧栏视图切换">
           <button class="tab-btn active" data-tab="lookup" role="tab" aria-selected="true">查词</button>
           <button class="tab-btn" data-tab="vocab" role="tab" aria-selected="false">生词本</button>
@@ -110,12 +155,12 @@
               <p id="selectedLemma" class="meta">原形: -</p>
               <p id="selectedReading" class="meta">读音: -</p>
               <p id="selectedPos" class="meta">词性: -</p>
-              <p id="selectedMeaning" class="meaning">
+              <p id="selectedMeaning" class="meaning" data-testid="word-meaning">
                 在阅读区拖选要查询的文字，或直接点击已标注的 N1/N2/N3 词。
               </p>
               <p id="selectedExample" class="example-sentence">例句: -</p>
               <div class="lookup-actions">
-                <button id="addWordBtn">加入生词本</button>
+                <button id="addWordBtn" data-testid="add-vocab-btn">加入生词本</button>
                 <button id="addNoteBtn">为该词批注</button>
                 <a
                   id="dictLink"
@@ -136,6 +181,18 @@
                 >
               </div>
             </section>
+
+            <section class="card explain-card">
+              <h3>AI 句子解释</h3>
+              <p id="explainQuota" class="meta">游客 explain 剩余：- / -</p>
+              <p id="explainStatus" class="meta" data-testid="explain-status">
+                点击阅读区中的句子查看 AI 解释。
+              </p>
+              <p id="explainTranslation" class="meaning" data-testid="explain-translation"></p>
+              <ul id="explainGrammar" class="simple-list compact-list" data-testid="explain-grammar"></ul>
+              <ul id="explainNotes" class="simple-list compact-list" data-testid="explain-notes"></ul>
+              <p id="explainDifficulty" class="meta" data-testid="explain-difficulty"></p>
+            </section>
           </div>
 
           <div class="right-pane" data-pane="vocab">
@@ -144,7 +201,7 @@
                 <h3>生词本</h3>
                 <button id="exportBtn" class="secondary-btn small">导出 CSV</button>
               </div>
-              <ul id="vocabList" class="vocab-list"></ul>
+              <ul id="vocabList" class="vocab-list" data-testid="vocab-list"></ul>
             </section>
           </div>
 
@@ -231,9 +288,19 @@
           </select>
         </section>
 
+        <section class="card data-card">
+          <h3>数据控制</h3>
+          <div class="lookup-actions">
+            <button id="exportProgressBtn" class="secondary-btn small">导出进度</button>
+            <button id="deleteBookBtn" class="secondary-btn small">删除当前书</button>
+            <button id="deleteCloudBtn" class="secondary-btn small">删除云端数据</button>
+            <button id="deleteAccountBtn" class="secondary-btn small danger-btn">删除账号</button>
+          </div>
+        </section>
+
       </aside>
     </main>
-
-    <script src="app.js"></script>
+    <div id="appToast" class="app-toast" hidden aria-live="polite"></div>
+    <script type="module" src="app.js"></script>
   </body>
 </html>

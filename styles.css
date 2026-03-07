@@ -234,7 +234,80 @@ textarea {
 }
 
 .right-panel {
-  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+}
+
+.plan-card {
+  border-color: rgba(127, 58, 30, 0.25);
+  background: linear-gradient(140deg, rgba(255, 250, 242, 0.92), rgba(252, 237, 220, 0.9));
+}
+
+.plan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.plan-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 0.18rem 0.62rem;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  border: 1px solid transparent;
+}
+
+.plan-pill.free {
+  color: #7e5608;
+  background: rgba(226, 193, 89, 0.24);
+  border-color: rgba(171, 124, 27, 0.38);
+}
+
+.plan-pill.pro {
+  color: #215f2d;
+  background: rgba(92, 175, 109, 0.2);
+  border-color: rgba(39, 108, 53, 0.34);
+}
+
+.plan-benefit-list {
+  list-style: none;
+  margin: 0.55rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.plan-benefit-list li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+  font-size: 0.82rem;
+  color: #5f3f2d;
+}
+
+.plan-benefit-list strong {
+  font-size: 0.78rem;
+  border-radius: 999px;
+  padding: 0.08rem 0.42rem;
+  border: 1px solid rgba(127, 58, 30, 0.24);
+  background: rgba(255, 247, 236, 0.88);
+}
+
+.plan-benefit-list strong.enabled {
+  color: #245f2f;
+  background: rgba(99, 186, 117, 0.18);
+  border-color: rgba(49, 126, 63, 0.3);
+}
+
+.plan-benefit-list strong.disabled {
+  color: #775524;
+  background: rgba(226, 193, 89, 0.22);
+  border-color: rgba(171, 124, 27, 0.34);
 }
 
 .right-tabs {
@@ -478,6 +551,16 @@ textarea {
   -webkit-user-select: text;
 }
 
+.sentence-segment {
+  display: inline;
+  border-radius: 10px;
+  transition: background 120ms ease;
+}
+
+.sentence-segment.active {
+  background: rgba(127, 58, 30, 0.08);
+}
+
 .jp-char {
   cursor: pointer;
   border-radius: 4px;
@@ -536,6 +619,14 @@ textarea {
   line-height: 1.6;
 }
 
+.compact-list {
+  margin-top: 0.55rem;
+}
+
+.compact-list li {
+  padding: 0.4rem 0.45rem;
+}
+
 .lookup-actions {
   display: flex;
   gap: 0.5rem;
@@ -548,8 +639,37 @@ textarea {
   pointer-events: none;
 }
 
+.app-toast {
+  position: fixed;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  z-index: 20;
+  min-width: min(340px, calc(100vw - 2rem));
+  max-width: 420px;
+  padding: 0.8rem 1rem;
+  border-radius: 16px;
+  border: 1px solid rgba(127, 58, 30, 0.26);
+  background: rgba(255, 247, 236, 0.96);
+  color: #5d3c22;
+  box-shadow: 0 16px 38px rgba(67, 40, 22, 0.2);
+}
+
+.app-toast.error {
+  border-color: rgba(155, 34, 20, 0.32);
+  color: #8e2719;
+}
+
+button:disabled,
+.file-btn:disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
 .settings-card label,
-.tts-card label {
+.tts-card label,
+.plan-card label {
   display: block;
   margin-top: 0.44rem;
   margin-bottom: 0.15rem;
@@ -634,4 +754,86 @@ input[type="range"] {
   .panel-head {
     flex-wrap: wrap;
   }
+}
+
+.hero-copy {
+  max-width: 720px;
+}
+
+.hero-subtitle {
+  margin: 0.35rem 0 0.8rem;
+  color: var(--ink-soft);
+}
+
+.hero-benefits {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  padding: 0;
+  margin: 0 0 1rem;
+  list-style: none;
+}
+
+.hero-benefits li,
+.account-chip {
+  padding: 0.45rem 0.8rem;
+  border-radius: 999px;
+  background: rgba(255, 247, 235, 0.92);
+  border: 1px solid rgba(127, 58, 30, 0.16);
+  color: #6f3419;
+  font-size: 0.92rem;
+}
+
+.feedback-actions {
+  display: flex;
+  gap: 0.55rem;
+}
+
+.danger-btn {
+  color: #8f1f0a;
+  border-color: rgba(143, 31, 10, 0.28);
+}
+
+.ops-body {
+  padding: 2rem;
+}
+
+.ops-shell {
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.ops-head,
+.ops-controls,
+.ops-table-wrap {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.ops-head {
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 1rem;
+}
+
+.ops-controls {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.user-input.narrow {
+  max-width: 96px;
+}
+
+.metrics-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+.metrics-table th,
+.metrics-table td {
+  padding: 0.75rem 0.65rem;
+  border-bottom: 1px solid rgba(127, 58, 30, 0.1);
+  text-align: left;
 }

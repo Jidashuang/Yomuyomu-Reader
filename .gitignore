@@ -6,3 +6,14 @@ backend/data/cloud/*.json
 backend/data/*.log
 __pycache__/
 *.pyc
+.env
+.env.local
+.DS_Store
+backend/data/backups/
+backend/data/billing_orders.json
+backend/data/import_jobs/
+backend/keys/*.pem
+backend/keys/*.key
+node_modules/
+playwright-report/
+test-results/
