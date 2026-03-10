@@ -42,55 +42,72 @@ class LibraryImportService:
         self._stop_event = threading.Event()
         self._active_jobs: set[str] = set()
         self._active_lock = threading.Lock()
+        self._dispatcher_thread: threading.Thread | None = None
+        self._reaper_thread: threading.Thread | None = None
+        self._start_background_threads_enabled = bool(start_background_threads)
         self._ensure_sample_book()
-        if start_background_threads:
+        if self._start_background_threads_enabled:
             self._start_background_threads()
 
     def _start_background_threads(self) -> None:
-        threading.Thread(
-            target=self._dispatch_loop,
-            daemon=True,
-            name="import-job-dispatcher",
-        ).start()
-        threading.Thread(
-            target=self._reaper_loop,
-            daemon=True,
-            name="import-job-reaper",
-        ).start()
+        if self._stop_event.is_set():
+            return
+        if self._dispatcher_thread is None or not self._dispatcher_thread.is_alive():
+            self._dispatcher_thread = threading.Thread(
+                target=self._dispatch_loop,
+                daemon=True,
+                name="import-job-dispatcher",
+            )
+            self._dispatcher_thread.start()
+        if self._reaper_thread is None or not self._reaper_thread.is_alive():
+            self._reaper_thread = threading.Thread(
+                target=self._reaper_loop,
+                daemon=True,
+                name="import-job-reaper",
+            )
+            self._reaper_thread.start()
 
     def _dispatch_loop(self) -> None:
         while not self._stop_event.is_set():
-            with self._active_lock:
-                can_spawn = len(self._active_jobs) < self.max_workers
-            if not can_spawn:
-                time.sleep(0.25)
-                continue
-            job = self.jobs.claim_next_job(lease_ms=self.lease_ms)
-            if not job:
-                time.sleep(0.25)
-                continue
-            with self._active_lock:
-                self._active_jobs.add(job["jobId"])
-            threading.Thread(
-                target=self._process_claimed_job,
-                args=(job,),
-                daemon=True,
-                name=f"import-worker-{job['jobId']}",
-            ).start()
+            try:
+                with self._active_lock:
+                    can_spawn = len(self._active_jobs) < self.max_workers
+                if not can_spawn:
+                    time.sleep(0.25)
+                    continue
+                job = self.jobs.claim_next_job(lease_ms=self.lease_ms)
+                if not job:
+                    time.sleep(0.25)
+                    continue
+                with self._active_lock:
+                    self._active_jobs.add(job["jobId"])
+                threading.Thread(
+                    target=self._process_claimed_job,
+                    args=(job,),
+                    daemon=True,
+                    name=f"import-worker-{job['jobId']}",
+                ).start()
+            except Exception as exc:
+                print(f"[import-job-dispatcher] recovered from error: {exc}")
+                time.sleep(0.5)
 
     def _reaper_loop(self) -> None:
         while not self._stop_event.is_set():
-            reclaimed = self.jobs.requeue_stale_jobs(max_attempts=self.max_attempts)
-            for job in reclaimed:
-                if not job:
-                    continue
-                if job.get("status") == "queued":
-                    self.events.track(
-                        "import_job_requeued",
-                        user_id=job.get("userId", ""),
-                        payload={"jobId": job.get("jobId", "")},
-                    )
-            time.sleep(2.0)
+            try:
+                reclaimed = self.jobs.requeue_stale_jobs(max_attempts=self.max_attempts)
+                for job in reclaimed:
+                    if not job:
+                        continue
+                    if job.get("status") == "queued":
+                        self.events.track(
+                            "import_job_requeued",
+                            user_id=job.get("userId", ""),
+                            payload={"jobId": job.get("jobId", "")},
+                        )
+                time.sleep(2.0)
+            except Exception as exc:
+                print(f"[import-job-reaper] recovered from error: {exc}")
+                time.sleep(0.5)
 
     @staticmethod
     def _book_sha256(raw: bytes) -> str:
@@ -108,6 +125,8 @@ class LibraryImportService:
         file_type: str,
         raw: bytes,
     ) -> dict:
+        if self._start_background_threads_enabled:
+            self._start_background_threads()
         user_key = sanitize_user_id(user_id)
         book_sha256 = self._book_sha256(raw)
         idempotency_key = f"{user_key}:{book_sha256}"

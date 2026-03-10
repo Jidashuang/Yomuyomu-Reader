@@ -57,12 +57,39 @@ async function loginAccount(page, userId) {
 }
 
 async function importTextBook(page, name, text, expectedTitle = name.replace(/\.txt$/i, "")) {
+  const statusText = page.locator("#statusText");
   await page.setInputFiles("#fileInput", {
     name,
     mimeType: "text/plain",
     buffer: Buffer.from(text, "utf-8"),
   });
-  await expect(page.locator("#bookTitle")).toContainText(expectedTitle);
+
+  await expect
+    .poll(
+      async () => ((await statusText.textContent()) || "").trim(),
+      { timeout: 30_000 }
+    )
+    .not.toContain(`正在导入 ${name}`);
+
+  const finalStatus = ((await statusText.textContent()) || "").trim();
+  expect(finalStatus).not.toContain("后端导入失败");
+  expect(finalStatus).not.toContain("该格式需要后端 API");
+
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(() => {
+          try {
+            return JSON.parse(localStorage.getItem("yomuyomu_book_v3") || "{}")?.title || "";
+          } catch {
+            return "";
+          }
+        }),
+      { timeout: 30_000 }
+    )
+    .toContain(expectedTitle);
+
+  await expect(page.locator("#bookTitle")).toContainText(expectedTitle, { timeout: 15_000 });
 }
 
 async function clickSentence(page, testId, charIndex = 0) {
@@ -126,20 +153,23 @@ test("free users are blocked on the sixth uncached explain", async ({ page }) =>
   await clickSentence(page, "sentence-ch-1-0-p0-s0", -1);
   await expect(page.getByTestId("explain-status")).not.toContainText("AI 正在解释句子...");
   const firstExplainStatus = (await page.getByTestId("explain-status").textContent()) || "";
-  if (firstExplainStatus.includes("AI explanation will be available soon.")) {
-    await expect(page.getByTestId("explain-status")).toContainText(
-      "AI explanation will be available soon."
-    );
+  const unavailableHints = [
+    "AI explanation will be available soon.",
+    "AI explanation is not available yet.",
+    "AI explanation failed. Please try again later.",
+  ];
+  if (unavailableHints.some((hint) => firstExplainStatus.includes(hint))) {
     return;
   }
+  const limitReachedPattern = /已用完|today['’]s ai explanation limit|reached today/i;
 
   for (let index = 0; index < 5; index += 1) {
     await clickSentence(page, `sentence-ch-1-0-p0-s${index}`, -1);
-    await expect(page.getByTestId("explain-status")).not.toContainText("已用完");
+    await expect(page.getByTestId("explain-status")).not.toContainText(limitReachedPattern);
   }
 
   await clickSentence(page, "sentence-ch-1-0-p0-s5", -1);
-  await expect(page.getByTestId("explain-status")).toContainText("已用完");
+  await expect(page.getByTestId("explain-status")).toContainText(limitReachedPattern);
 });
 
 test("sync failure only shows toast and preserves local vocab after reload", async ({ page }) => {

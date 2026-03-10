@@ -13,7 +13,7 @@ export default defineConfig({
   webServer: {
     command: "python3 backend/server.py --host 127.0.0.1 --port 8000",
     port: 8000,
-    reuseExistingServer: true,
+    reuseExistingServer: false,
     timeout: 120_000,
   },
 });
