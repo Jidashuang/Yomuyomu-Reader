@@ -14,292 +14,571 @@
   </head>
   <body>
     <div class="noise-bg" aria-hidden="true"></div>
+
     <header class="app-header">
-      <div class="hero-copy">
-        <p class="eyebrow">Read Japanese Faster</p>
-        <h1>YomuYomu 日语原著阅读器</h1>
-        <p class="hero-subtitle">打开首页就进入 sample 阅读，先试读，再决定是否注册升级。</p>
-        <ul class="hero-benefits">
-          <li>JLPT 颜色标注</li>
-          <li>点词即查</li>
-          <li>句子级 AI explain</li>
-        </ul>
-        <div id="apiStatus" class="api-status status-badges" aria-live="polite">
-          <span class="status-chip">API 检测中...</span>
-        </div>
+      <div class="logo">
+        <h1>YomuYomu</h1>
+        <span>Read Japanese Faster</span>
       </div>
+
       <div class="header-actions">
-        <label class="file-btn">
-          导入 TXT/EPUB/PDF/MOBI
+        <label id="importBookBtn" class="file-btn header-btn">
+          Import Book
           <input
             id="fileInput"
             type="file"
             accept=".txt,.epub,.pdf,.mobi,text/plain,application/epub+zip,application/pdf"
           />
         </label>
-        <button id="loadSampleBtn" class="secondary-btn" data-testid="import-sample-btn">导入示例书</button>
-        <span id="accountModeLabel" class="account-chip">游客模式</span>
-        <input id="registerAccountInput" class="user-input" type="text" value="" placeholder="注册账号 ID" />
-        <button id="registerAccountBtn" class="secondary-btn">注册账号</button>
-        <input id="userIdInput" class="user-input" type="text" value="" placeholder="当前账号" />
-        <button id="pullSyncBtn" class="secondary-btn">云端拉取</button>
-        <button id="pushSyncBtn" class="secondary-btn">云端上传</button>
+        <button id="loadSampleBtn" class="secondary-btn header-btn" data-testid="import-sample-btn">
+          Sample Book
+        </button>
       </div>
+
+      <div class="header-account">
+        <details id="accountMenu" class="account-menu">
+          <summary id="accountMenuSummary">
+            <span id="accountModeLabel" class="account-status">Guest mode</span>
+            <span class="account-caret" aria-hidden="true">▾</span>
+          </summary>
+          <div class="account-menu-items">
+            <button id="signInButton" class="tiny-btn" type="button">Sign in</button>
+            <button id="registerMenuButton" class="tiny-btn" type="button">Register</button>
+            <button id="pullSyncBtn" class="tiny-btn" type="button" hidden>Cloud Pull</button>
+            <button id="pushSyncBtn" class="tiny-btn" type="button" hidden>Cloud Push</button>
+            <button id="logoutButton" class="tiny-btn" type="button" hidden>Logout</button>
+          </div>
+        </details>
+      </div>
+      <span class="visually-hidden">Logged in as <strong id="usernameDisplay"></strong></span>
     </header>
 
-    <main class="layout">
+    <main class="layout reader-layout">
       <aside class="left-panel">
         <section class="card book-card">
-          <h3>书籍信息</h3>
+          <h3>Book Info</h3>
           <p id="bookTitle" class="book-title">未导入书籍</p>
+          <p id="bookAuthor" class="meta" hidden>作者: -</p>
           <p id="bookMeta" class="meta">格式: -</p>
           <p id="chapterCount" class="meta">章节: 0</p>
-          <button id="addBookmarkBtn">添加书签</button>
-          <p id="statusText" class="status-text">就绪</p>
+          <div id="apiStatus" class="api-status status-badges" aria-live="polite">
+            <span class="status-chip">API 检测中...</span>
+          </div>
         </section>
+        <p id="statusText" class="status-text">就绪</p>
 
         <section class="card toc-card">
-          <h3>章节目录</h3>
+          <h3>Table of Contents</h3>
           <ul id="chapterList" class="simple-list" data-testid="chapter-list"></ul>
         </section>
 
         <section class="card bookmarks-card">
-          <h3>书签</h3>
+          <div class="vocab-head">
+            <h3>Bookmarks</h3>
+            <button id="addBookmarkBtn" class="secondary-btn small">添加书签</button>
+          </div>
           <ul id="bookmarkList" class="simple-list"></ul>
-        </section>
-
-        <section class="card notes-list-card">
-          <h3>批注</h3>
-          <ul id="noteList" class="simple-list"></ul>
         </section>
       </aside>
 
-      <section class="reader-panel">
-        <div class="panel-head">
-          <div>
+      <section class="reader-panel reader-column">
+        <div class="reader-header">
+          <div class="reader-meta chapter-headline">
             <h2 id="chapterTitle">阅读区</h2>
             <p id="chapterProgress" class="meta">章节 0 / 0</p>
           </div>
-          <div class="page-actions">
-            <button id="prevPageBtn" class="secondary-btn">上一页</button>
-            <button id="nextPageBtn" class="secondary-btn">下一页</button>
-            <button id="toggleAutoPageBtn" class="secondary-btn">自动翻页: 关</button>
-            <button id="toggleFocusBtn" class="secondary-btn">专注模式: 关</button>
-          </div>
-          <div class="stats-inline">
-            <span>查词: <strong id="lookupCount">0</strong></span>
-            <span>阅读时长: <strong id="readingTime">00:00</strong></span>
-            <span>待复习: <strong id="dueCount">0</strong></span>
-          </div>
-          <div class="feedback-actions">
-            <button id="reportIssueBtn" class="secondary-btn small">报告问题</button>
-            <button id="sendFeedbackBtn" class="secondary-btn small">发送反馈</button>
+          <div class="reader-toolbar">
+            <div class="reading-mode-switch" role="group" aria-label="阅读模式">
+              <button id="scrollModeBtn" class="secondary-btn small mode-btn" data-reading-mode="scroll">
+                Scroll
+              </button>
+              <button id="pagedModeBtn" class="secondary-btn small mode-btn" data-reading-mode="paged">
+                Paged
+              </button>
+            </div>
+            <button id="toggleFocusBtn" class="secondary-btn small">专注模式: 关</button>
+            <details id="readerSettingsPopover" class="reader-settings-popover">
+              <summary id="readerSettingsBtn" class="secondary-btn small" aria-haspopup="dialog">Aa</summary>
+              <div id="readerSettingsPanel" class="reader-settings-panel" role="dialog" aria-label="阅读设置">
+                <div class="reader-setting-row">
+                  <label for="fontSizeRange">Font size</label>
+                  <input id="fontSizeRange" type="range" min="16" max="32" step="1" />
+                  <div class="stepper-group">
+                    <button id="fontDecreaseBtn" class="secondary-btn small" type="button">A-</button>
+                    <button id="fontIncreaseBtn" class="secondary-btn small" type="button">A+</button>
+                  </div>
+                </div>
+                <div class="reader-setting-row">
+                  <label for="lineHeightRange">Line height</label>
+                  <input id="lineHeightRange" type="range" min="1.4" max="2.4" step="0.1" />
+                  <div class="stepper-group">
+                    <button id="lineHeightDecreaseBtn" class="secondary-btn small" type="button">行距-</button>
+                    <button id="lineHeightIncreaseBtn" class="secondary-btn small" type="button">行距+</button>
+                  </div>
+                </div>
+              </div>
+            </details>
+            <div id="pagedControls" class="page-actions" hidden>
+              <button id="prevPageBtn" class="secondary-btn">上一页</button>
+              <button id="nextPageBtn" class="secondary-btn">下一页</button>
+            </div>
           </div>
         </div>
-        <article id="readerContent" class="reader-content" aria-live="polite" data-testid="reader-content">
-          <p class="empty-tip">先导入书籍，开始阅读。</p>
-        </article>
+        <div id="readerViewport" class="reader-viewport">
+          <article id="readerContent" class="reader-content" aria-live="polite" data-testid="reader-content">
+            <p class="empty-tip">先导入书籍，开始阅读。</p>
+          </article>
+        </div>
       </section>
 
-      <aside class="right-panel">
-        <section class="card plan-card">
-          <div class="plan-head">
-            <h3>套餐</h3>
-            <span id="planLabel" class="plan-pill free">FREE</span>
-          </div>
-          <p id="planHint" class="meta">Free：仅 TXT 导入，云同步与全量导出需升级。</p>
-          <ul id="planBenefitList" class="plan-benefit-list">
-            <li>
-              <span>高级导入（EPUB/PDF/MOBI）</span>
-              <strong id="benefitAdvancedImport">未开通</strong>
-            </li>
-            <li>
-              <span>云同步（多设备）</span>
-              <strong id="benefitCloudSync">未开通</strong>
-            </li>
-            <li>
-              <span>生词 CSV 导出额度</span>
-              <strong id="benefitCsvLimit">60 条</strong>
-            </li>
-          </ul>
-          <label for="payChannelSelect">支付渠道</label>
-          <select id="payChannelSelect">
-            <option value="stripe">Stripe（银行卡）</option>
-            <option value="wechat">微信支付</option>
-            <option value="alipay">支付宝</option>
-          </select>
-          <label for="billingIntervalSelect">订阅周期</label>
-          <select id="billingIntervalSelect">
-            <option value="monthly">月付</option>
-            <option value="yearly">年付</option>
-          </select>
+      <aside class="right-panel sidebar">
+        <section class="card lookup-card">
+          <h3>Word / Dictionary</h3>
+          <p id="selectedWord" class="selected-word">未选中</p>
+          <p id="selectedLemma" class="meta">原形: -</p>
+          <p id="selectedReading" class="meta">读音: -</p>
+          <p id="selectedPos" class="meta">词性: -</p>
+          <p id="selectedMeaning" class="meaning" data-testid="word-meaning">
+            在阅读区拖选要查询的文字，或直接点击已标注的 N1/N2/N3 词。
+          </p>
+          <p id="selectedExample" class="example-sentence">例句: -</p>
           <div class="lookup-actions">
-            <button id="upgradeProBtn">订阅 Pro</button>
-            <button id="manageBillingBtn" class="secondary-btn">管理订阅</button>
-          </div>
-          <p id="billingFlowHint" class="meta">Stripe 默认自动续费，可随时在管理页取消。</p>
-        </section>
-
-        <div id="rightTabs" class="card right-tabs" role="tablist" aria-label="侧栏视图切换">
-          <button class="tab-btn active" data-tab="lookup" role="tab" aria-selected="true">查词</button>
-          <button class="tab-btn" data-tab="vocab" role="tab" aria-selected="false">生词本</button>
-          <button class="tab-btn" data-tab="notes" role="tab" aria-selected="false">批注</button>
-          <button class="tab-btn" data-tab="stats" role="tab" aria-selected="false">统计</button>
-        </div>
-
-        <div class="right-panes">
-          <div class="right-pane active" data-pane="lookup">
-            <section class="card lookup-card">
-              <h3>点词释义</h3>
-              <p id="selectedWord" class="selected-word">未选中</p>
-              <p id="selectedLemma" class="meta">原形: -</p>
-              <p id="selectedReading" class="meta">读音: -</p>
-              <p id="selectedPos" class="meta">词性: -</p>
-              <p id="selectedMeaning" class="meaning" data-testid="word-meaning">
-                在阅读区拖选要查询的文字，或直接点击已标注的 N1/N2/N3 词。
-              </p>
-              <p id="selectedExample" class="example-sentence">例句: -</p>
-              <div class="lookup-actions">
-                <button id="addWordBtn" data-testid="add-vocab-btn">加入生词本</button>
-                <button id="addNoteBtn">为该词批注</button>
-                <a
-                  id="dictLink"
-                  href="https://www.mojidict.com"
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  class="ghost-link"
-                  >在 MOJi（日版）中查</a
-                >
-                <a
-                  id="macDictLink"
-                  href="#"
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  class="ghost-link"
-                  hidden
-                  >在 mac 词典中查</a
-                >
-              </div>
-            </section>
-
-            <section class="card explain-card">
-              <h3>AI 句子解释</h3>
-              <p id="explainQuota" class="meta">游客 explain 剩余：- / -</p>
-              <p id="explainStatus" class="meta" data-testid="explain-status">
-                点击阅读区中的句子查看 AI 解释。
-              </p>
-              <p id="explainTranslation" class="meaning" data-testid="explain-translation"></p>
-              <ul id="explainGrammar" class="simple-list compact-list" data-testid="explain-grammar"></ul>
-              <ul id="explainNotes" class="simple-list compact-list" data-testid="explain-notes"></ul>
-              <p id="explainDifficulty" class="meta" data-testid="explain-difficulty"></p>
-            </section>
-          </div>
-
-          <div class="right-pane" data-pane="vocab">
-            <section class="card vocab-card">
-              <div class="vocab-head">
-                <h3>生词本</h3>
-                <button id="exportBtn" class="secondary-btn small">导出 CSV</button>
-              </div>
-              <ul id="vocabList" class="vocab-list" data-testid="vocab-list"></ul>
-            </section>
-          </div>
-
-          <div class="right-pane" data-pane="notes">
-            <section class="card note-editor-card">
-              <h3>批注编辑</h3>
-              <p id="noteEditorTarget" class="meta">未选中词</p>
-              <textarea
-                id="noteInput"
-                rows="3"
-                placeholder="写下语法点、场景含义、记忆联想..."
-              ></textarea>
-              <div class="lookup-actions">
-                <button id="saveNoteBtn">保存批注</button>
-                <button id="clearNoteBtn" class="secondary-btn">清空</button>
-              </div>
-            </section>
-          </div>
-
-          <div class="right-pane" data-pane="stats">
-            <section class="card hardwords-card">
-              <div class="vocab-head">
-                <h3>难词速览（当前章节）</h3>
-                <button id="refreshHardWordsBtn" class="secondary-btn small">刷新</button>
-              </div>
-              <ul id="hardWordList" class="simple-list"></ul>
-            </section>
-
-            <section class="card freq-card">
-              <h3>词频统计（全书）</h3>
-              <p id="freqSummary" class="meta">等待分析...</p>
-              <ul id="freqList" class="simple-list"></ul>
-            </section>
-          </div>
-        </div>
-
-        <section class="card tts-card">
-          <h3>TTS 朗读</h3>
-          <label for="ttsVoiceSelect">语音</label>
-          <select id="ttsVoiceSelect"></select>
-          <label for="ttsRateRange">语速</label>
-          <input id="ttsRateRange" type="range" min="0.6" max="1.4" step="0.1" />
-          <div class="lookup-actions">
-            <button id="ttsPlayBtn">朗读当前章节</button>
-            <button id="ttsStopBtn" class="secondary-btn">停止朗读</button>
+            <button id="addWordBtn" data-testid="add-vocab-btn">加入生词本</button>
+            <button id="addNoteBtn">为该词批注</button>
+            <a
+              id="dictLink"
+              href="https://www.mojidict.com"
+              target="_blank"
+              rel="noreferrer noopener"
+              class="ghost-link"
+              >在 MOJi（日版）中查</a
+            >
+            <a
+              id="macDictLink"
+              href="#"
+              target="_blank"
+              rel="noreferrer noopener"
+              class="ghost-link"
+              hidden
+              >在 mac 词典中查</a
+            >
           </div>
         </section>
 
-        <section class="card settings-card">
-          <h3>阅读设置</h3>
-          <p class="meta">难度标注：N1 红色、N2 黄虚线、N3 绿色下划线。</p>
-          <label for="difficultyModeSelect">难度标注模式</label>
-          <select id="difficultyModeSelect">
-            <option value="n1n2n3">N1 + N2 + N3</option>
-            <option value="n1n2">N1 + N2</option>
-            <option value="n1">仅 N1</option>
-            <option value="off">关闭</option>
-          </select>
-          <label for="mojiSchemeSelect">MOJi 调用版本</label>
-          <select id="mojiSchemeSelect">
-            <option value="jp">日版（mojisho://）</option>
-            <option value="en">英版（mojishoen4cn://）</option>
-          </select>
-          <label for="autoPageSecondsRange">自动翻页间隔（秒）</label>
-          <input id="autoPageSecondsRange" type="range" min="6" max="40" step="1" />
-          <p id="autoPageSecondsText" class="meta">12 秒 / 页</p>
-          <label for="fontSizeRange">字号</label>
-          <input id="fontSizeRange" type="range" min="16" max="32" step="1" />
-          <label for="lineHeightRange">行距</label>
-          <input
-            id="lineHeightRange"
-            type="range"
-            min="1.4"
-            max="2.4"
-            step="0.1"
-          />
-          <label for="readerFontSelect">正文字体</label>
-          <select id="readerFontSelect">
-            <option value="mincho">经典明朝（Zen Old Mincho）</option>
-            <option value="noto">Noto Serif JP</option>
-            <option value="shippori">Shippori Mincho</option>
-            <option value="gothic">M PLUS 1p（黑体）</option>
-            <option value="rounded">M PLUS Rounded 1c（圆体）</option>
-          </select>
+        <section class="card explain-card">
+          <h3>AI Explain</h3>
+          <p id="explainQuota" class="meta">游客 explain 剩余：- / -</p>
+          <p class="meta">Free users have limited AI explanations.</p>
+          <p id="explainStatus" class="meta" data-testid="explain-status">点击阅读区中的句子查看 AI 解释。</p>
+          <p id="explainTranslation" class="meaning" data-testid="explain-translation"></p>
+          <ul id="explainGrammar" class="simple-list compact-list" data-testid="explain-grammar"></ul>
+          <ul id="explainNotes" class="simple-list compact-list" data-testid="explain-notes"></ul>
+          <p id="explainDifficulty" class="meta" data-testid="explain-difficulty"></p>
         </section>
 
-        <section class="card data-card">
-          <h3>数据控制</h3>
-          <div class="lookup-actions">
-            <button id="exportProgressBtn" class="secondary-btn small">导出进度</button>
-            <button id="deleteBookBtn" class="secondary-btn small">删除当前书</button>
-            <button id="deleteCloudBtn" class="secondary-btn small">删除云端数据</button>
-            <button id="deleteAccountBtn" class="secondary-btn small danger-btn">删除账号</button>
+        <section id="toolsSection" class="card tools-shell">
+          <div id="rightTabs" class="right-tabs" role="tablist" aria-label="工具面板切换">
+            <button class="tab-btn active" data-tab="vocab" role="tab" aria-selected="true">Vocab</button>
+            <button class="tab-btn" data-tab="notes" role="tab" aria-selected="false">Notes</button>
+            <button class="tab-btn" data-tab="more" role="tab" aria-selected="false">More</button>
+          </div>
+
+          <div class="right-panes">
+            <div class="right-pane active" data-pane="vocab">
+              <section class="card stats-overview-card">
+                <h3>阅读统计</h3>
+                <div class="stats-inline">
+                  <span>查词: <strong id="lookupCount">0</strong></span>
+                  <span>阅读时长: <strong id="readingTime">00:00</strong></span>
+                  <span>待复习: <strong id="dueCount">0</strong></span>
+                </div>
+              </section>
+
+              <section class="card vocab-card">
+                <div class="vocab-head">
+                  <h3>生词本</h3>
+                  <button id="exportBtn" class="secondary-btn small">导出 CSV</button>
+                </div>
+                <ul id="vocabList" class="vocab-list" data-testid="vocab-list"></ul>
+              </section>
+
+              <section class="card hardwords-card">
+                <div class="vocab-head">
+                  <h3>难词速览（当前章节）</h3>
+                  <button id="refreshHardWordsBtn" class="secondary-btn small">刷新</button>
+                </div>
+                <ul id="hardWordList" class="simple-list"></ul>
+              </section>
+
+              <section class="card freq-card">
+                <h3>词频统计（全书）</h3>
+                <p id="freqSummary" class="meta">等待分析...</p>
+                <ul id="freqList" class="simple-list"></ul>
+              </section>
+            </div>
+
+            <div class="right-pane" data-pane="notes">
+              <section class="card note-editor-card">
+                <h3>批注编辑</h3>
+                <p id="noteEditorTarget" class="meta">未选中词</p>
+                <textarea
+                  id="noteInput"
+                  rows="3"
+                  placeholder="写下语法点、场景含义、记忆联想..."
+                ></textarea>
+                <div class="lookup-actions">
+                  <button id="saveNoteBtn">保存批注</button>
+                  <button id="clearNoteBtn" class="secondary-btn">清空</button>
+                </div>
+              </section>
+
+              <section class="card notes-list-card">
+                <h3>批注列表</h3>
+                <ul id="noteList" class="simple-list"></ul>
+              </section>
+
+              <section class="card notes-bookmarks-card">
+                <h3>书签列表</h3>
+                <ul id="notesBookmarkList" class="simple-list"></ul>
+              </section>
+            </div>
+
+            <div class="right-pane" data-pane="more">
+              <div class="more-accordion">
+                <details class="more-section" data-more-section="cloud">
+                  <summary>Cloud Sync</summary>
+                  <div class="more-section-body">
+                    <p class="meta">Cloud Pull / Push 已收纳到账户下拉菜单中。</p>
+                  </div>
+                </details>
+
+                <details class="more-section" data-more-section="tts">
+                  <summary>TTS</summary>
+                  <div class="more-section-body tts-card">
+                    <label for="ttsVoiceSelect">语音</label>
+                    <select id="ttsVoiceSelect"></select>
+                    <label for="ttsRateRange">语速</label>
+                    <input id="ttsRateRange" type="range" min="0.6" max="1.4" step="0.1" />
+                    <div class="lookup-actions">
+                      <button id="ttsPlayBtn">朗读当前章节</button>
+                      <button id="ttsStopBtn" class="secondary-btn">停止朗读</button>
+                    </div>
+                  </div>
+                </details>
+
+                <details class="more-section" data-more-section="advanced">
+                  <summary>Advanced Reading Settings</summary>
+                  <div class="more-section-body settings-card">
+                    <p class="meta">难度标注：N1 红色、N2 黄虚线、N3 绿色下划线。</p>
+                    <label for="difficultyModeSelect">难度标注模式</label>
+                    <select id="difficultyModeSelect">
+                      <option value="n1n2n3">N1 + N2 + N3</option>
+                      <option value="n1n2">N1 + N2</option>
+                      <option value="n1">仅 N1</option>
+                      <option value="off">关闭</option>
+                    </select>
+                    <label for="mojiSchemeSelect">MOJi 调用版本</label>
+                    <select id="mojiSchemeSelect">
+                      <option value="jp">日版（mojisho://）</option>
+                      <option value="en">英版（mojishoen4cn://）</option>
+                    </select>
+                    <label for="autoPageSecondsRange">自动翻页间隔（秒）</label>
+                    <input id="autoPageSecondsRange" type="range" min="6" max="40" step="1" />
+                    <p id="autoPageSecondsText" class="meta">12 秒 / 页</p>
+                    <button id="toggleAutoPageBtn" class="secondary-btn small" type="button">自动翻页: 关</button>
+                    <label for="readerFontSelect">正文字体</label>
+                    <select id="readerFontSelect">
+                      <option value="mincho">经典明朝（Zen Old Mincho）</option>
+                      <option value="noto">Noto Serif JP</option>
+                      <option value="shippori">Shippori Mincho</option>
+                      <option value="gothic">M PLUS 1p（黑体）</option>
+                      <option value="rounded">M PLUS Rounded 1c（圆体）</option>
+                    </select>
+                  </div>
+                </details>
+
+                <details class="more-section" data-more-section="data">
+                  <summary>Data Controls</summary>
+                  <div class="more-section-body data-card">
+                    <div class="lookup-actions">
+                      <button id="exportProgressBtn" class="secondary-btn small">导出进度</button>
+                      <button id="deleteBookBtn" class="secondary-btn small">删除当前书</button>
+                      <button id="deleteCloudBtn" class="secondary-btn small">删除云端数据</button>
+                      <button id="deleteAccountBtn" class="secondary-btn small danger-btn">删除账号</button>
+                    </div>
+                    <div class="lookup-actions">
+                      <button id="reportIssueBtn" class="secondary-btn small">报告问题</button>
+                      <button id="sendFeedbackBtn" class="secondary-btn small">发送反馈</button>
+                    </div>
+                  </div>
+                </details>
+
+                <details class="more-section" data-more-section="plan">
+                  <summary>Plan / Billing</summary>
+                  <div class="more-section-body">
+                    <section id="planCard" class="plan-card">
+                      <div id="planLiteBlock" class="plan-lite" hidden>
+                        <h4>Pro Features</h4>
+                        <p class="meta">Pro is not available yet.</p>
+                        <button id="joinWaitlistBtn" class="secondary-btn small" type="button">Join waitlist</button>
+                      </div>
+                      <div id="planFullBlock">
+                        <div class="plan-head">
+                          <h3>Plan / Billing</h3>
+                          <span id="planLabel" class="plan-pill free">FREE</span>
+                        </div>
+                        <p id="planHint" class="meta">Free：仅 TXT 导入，云同步与全量导出需升级。</p>
+                        <p id="planComingSoon" class="meta" hidden>Pro is not available yet.</p>
+                        <ul id="planBenefitList" class="plan-benefit-list">
+                          <li>
+                            <span>高级导入（EPUB/PDF/MOBI）</span>
+                            <strong id="benefitAdvancedImport">未开通</strong>
+                          </li>
+                          <li>
+                            <span>云同步（多设备）</span>
+                            <strong id="benefitCloudSync">未开通</strong>
+                          </li>
+                          <li>
+                            <span>生词 CSV 导出额度</span>
+                            <strong id="benefitCsvLimit">60 条</strong>
+                          </li>
+                        </ul>
+                        <div id="paymentControls">
+                          <label for="payChannelSelect">支付渠道</label>
+                          <select id="payChannelSelect">
+                            <option value="stripe">Stripe（银行卡）</option>
+                            <option value="wechat">微信支付</option>
+                            <option value="alipay">支付宝</option>
+                          </select>
+                          <label for="billingIntervalSelect">订阅周期</label>
+                          <select id="billingIntervalSelect">
+                            <option value="monthly">月付</option>
+                            <option value="yearly">年付</option>
+                          </select>
+                          <div class="lookup-actions">
+                            <button id="upgradeProBtn">订阅 Pro</button>
+                            <button id="manageBillingBtn" class="secondary-btn">管理订阅</button>
+                          </div>
+                        </div>
+                        <p id="paymentDisabledHint" class="meta" hidden>
+                          Pro is not available yet.
+                        </p>
+                        <p id="billingFlowHint" class="meta">Stripe 默认自动续费，可随时在管理页取消。</p>
+                      </div>
+                    </section>
+                  </div>
+                </details>
+              </div>
+            </div>
           </div>
         </section>
-
       </aside>
     </main>
+
+    <section class="faq-section" id="faq" aria-labelledby="faqTitle">
+      <div class="faq-header">
+        <p class="faq-eyebrow">FAQ</p>
+        <h2 id="faqTitle">常见问题</h2>
+        <p>关于 YomuYomu，你可能想知道这些</p>
+      </div>
+      <div class="faq-list">
+        <details class="faq-item">
+          <summary class="faq-question">
+            <span>YomuYomu 支持哪些文件格式？</span>
+            <span class="faq-icon" aria-hidden="true">▾</span>
+          </summary>
+          <p class="faq-answer">
+            YomuYomu 当前支持 TXT、EPUB、PDF。你可以直接上传文件并开始阅读。一般来说，EPUB 和 TXT
+            最适合连续阅读，PDF 更适合文章、论文和排版较复杂的内容。
+          </p>
+        </details>
+
+        <details class="faq-item">
+          <summary class="faq-question">
+            <span>我需要注册才能使用吗？</span>
+            <span class="faq-icon" aria-hidden="true">▾</span>
+          </summary>
+          <p class="faq-answer">
+            不需要。你可以先用游客模式体验 sample 内容，也可以直接上传自己的文件开始阅读。如果你希望保存阅读进度、同步学习数据，或者未来升级
+            Pro，再注册账号即可。
+          </p>
+        </details>
+
+        <details class="faq-item">
+          <summary class="faq-question">
+            <span>游客模式和注册账号有什么区别？</span>
+            <span class="faq-icon" aria-hidden="true">▾</span>
+          </summary>
+          <p class="faq-answer">
+            游客模式适合快速体验：直接开始阅读、点词查询、使用有限次数的 AI explain。注册账号后可以获得更完整的体验，例如保存阅读进度、多设备同步、生词与批注的长期保存，以及未来升级
+            Pro。
+          </p>
+        </details>
+
+        <details class="faq-item">
+          <summary class="faq-question">
+            <span>AI 句子解释是怎么工作的？</span>
+            <span class="faq-icon" aria-hidden="true">▾</span>
+          </summary>
+          <p class="faq-answer">
+            当你点击一句话时，YomuYomu 会调用 AI 模型，返回句子翻译、语法解释、词汇说明和难度提示（如果可用）。它的目标不是替代翻译，而是帮助你更快理解原文，并继续读下去。
+          </p>
+        </details>
+
+        <details class="faq-item">
+          <summary class="faq-question">
+            <span>AI explain 免费吗？</span>
+            <span class="faq-icon" aria-hidden="true">▾</span>
+          </summary>
+          <p class="faq-answer">
+            可以体验，但免费用户有每日使用限制。这样做是为了控制运行成本，同时保证每个人都能先体验 AI 阅读辅助。未来 Pro 用户会获得更高额度或更多 AI
+            能力。
+          </p>
+        </details>
+
+        <details class="faq-item">
+          <summary class="faq-question">
+            <span>上传的文件会被公开吗？</span>
+            <span class="faq-icon" aria-hidden="true">▾</span>
+          </summary>
+          <p class="faq-answer">
+            不会。你上传的文件只会用于你自己的阅读和处理，不会公开展示给其他用户。如果你删除文件或删除账号，相关数据也会被清除。如果你在意隐私，建议不要上传特别敏感的个人或商业文档。
+          </p>
+        </details>
+
+        <details class="faq-item">
+          <summary class="faq-question">
+            <span>我的阅读进度会保存吗？</span>
+            <span class="faq-icon" aria-hidden="true">▾</span>
+          </summary>
+          <p class="faq-answer">
+            游客模式下，进度通常只保存在当前浏览器。注册账号后，阅读进度和部分学习数据可以保存到云端，方便你在不同设备继续阅读。
+          </p>
+        </details>
+
+        <details class="faq-item">
+          <summary class="faq-question">
+            <span>为什么有些词可以点，有些词不可以？</span>
+            <span class="faq-icon" aria-hidden="true">▾</span>
+          </summary>
+          <p class="faq-answer">
+            YomuYomu 会优先对识别到的日语词汇进行分词和标注。在不同格式、不同文本排版下，分词效果可能会有差异，尤其是复杂 PDF 或特殊排版内容中。我们会持续改进识别和点词体验。
+          </p>
+        </details>
+
+        <details class="faq-item">
+          <summary class="faq-question">
+            <span>YomuYomu 适合什么水平的学习者？</span>
+            <span class="faq-icon" aria-hidden="true">▾</span>
+          </summary>
+          <p class="faq-answer">
+            YomuYomu 最适合已经有一定基础、准备开始阅读真实日语内容的学习者。如果你已经在尝试阅读小说、轻小说、散文、新闻或文章，这个工具会特别有帮助。
+          </p>
+        </details>
+
+        <details class="faq-item">
+          <summary class="faq-question">
+            <span>YomuYomu 和普通词典 / 翻译工具有什么不同？</span>
+            <span class="faq-icon" aria-hidden="true">▾</span>
+          </summary>
+          <p class="faq-answer">
+            普通词典和翻译工具更适合“查一个词”或“翻一句话”。YomuYomu 更关注的是帮助你连续读完真实日语内容。它把阅读、点词、JLPT 难度标注、AI explain
+            和学习记录结合在一起，目标是减少阅读中断，而不是只做单次查询。
+          </p>
+        </details>
+
+        <details class="faq-item">
+          <summary class="faq-question">
+            <span>未来会支持哪些功能？</span>
+            <span class="faq-icon" aria-hidden="true">▾</span>
+          </summary>
+          <p class="faq-answer">
+            我们正在逐步加入和优化：更完整的 AI explain、生词本强化、更好的同步体验、Pro 订阅、更强的 PDF
+            支持，以及更多学习辅助能力。如果你有特别想要的功能，也欢迎反馈。
+          </p>
+        </details>
+
+        <details class="faq-item">
+          <summary class="faq-question">
+            <span>我可以反馈问题或建议吗？</span>
+            <span class="faq-icon" aria-hidden="true">▾</span>
+          </summary>
+          <p class="faq-answer">
+            当然可以。如果你遇到分词不准、点词异常、explain 不清楚、文件导入问题，或者有想要的新功能，都欢迎反馈。早期用户的每条反馈都很重要。
+          </p>
+        </details>
+      </div>
+    </section>
+
+    <div id="accountModal" class="account-modal" hidden>
+      <div id="accountModalBackdrop" class="account-modal-backdrop" aria-hidden="true"></div>
+      <section class="account-modal-panel" role="dialog" aria-modal="true" aria-labelledby="accountModalTitle">
+        <div class="account-modal-head">
+          <h3 id="accountModalTitle">Account</h3>
+          <button id="closeAccountModalBtn" class="secondary-btn small" type="button">Close</button>
+        </div>
+
+        <div id="accountGuestPanel" class="account-panel-view">
+          <div class="section-head">
+            <div>
+              <h3>Register to sync progress</h3>
+              <p class="meta">Create an account to keep progress across devices.</p>
+            </div>
+          </div>
+          <div class="account-form">
+            <label for="registerAccountInput">Username</label>
+            <input id="registerAccountInput" class="user-input" type="text" value="" placeholder="Username" />
+            <label for="registerPasswordInput">Password</label>
+            <input
+              id="registerPasswordInput"
+              class="user-input"
+              type="password"
+              value=""
+              placeholder="Password"
+              autocomplete="new-password"
+            />
+            <button id="registerAccountButton" class="secondary-btn">Register</button>
+            <p class="meta">Username must be 3–32 characters, lowercase letters, numbers, _ or -</p>
+          </div>
+
+          <div class="account-divider"></div>
+
+          <div class="section-head compact">
+            <div>
+              <h3>Login</h3>
+              <p class="meta">Already registered? Sign in here.</p>
+            </div>
+          </div>
+          <div class="account-form">
+            <label for="loginAccountInput">Username</label>
+            <input id="loginAccountInput" class="user-input" type="text" value="" placeholder="Username" />
+            <label for="loginPasswordInput">Password</label>
+            <input
+              id="loginPasswordInput"
+              class="user-input"
+              type="password"
+              value=""
+              placeholder="Password"
+              autocomplete="current-password"
+            />
+            <button id="loginButton" class="secondary-btn">Login</button>
+          </div>
+        </div>
+
+        <div id="accountRegisteredPanel" class="account-panel-view" hidden>
+          <div class="section-head">
+            <div>
+              <h3>Account</h3>
+              <p class="account-summary">Logged in as <strong id="accountDisplayName">-</strong></p>
+              <p class="meta">Plan: <strong id="accountPlanText">Free</strong></p>
+            </div>
+          </div>
+          <button id="accountLogoutButton" class="secondary-btn">Logout</button>
+        </div>
+      </section>
+    </div>
+
+    <input id="userIdInput" class="user-input account-hidden-input" type="text" value="" placeholder="当前账号" />
     <div id="appToast" class="app-toast" hidden aria-live="polite"></div>
     <script type="module" src="app.js"></script>
   </body>

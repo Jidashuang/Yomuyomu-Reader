@@ -64,39 +64,85 @@ class BackendServiceTests(unittest.TestCase):
             "notes": ["说明"],
             "difficulty": "N4",
         }
+        free_limit = int(settings.PLAN_FEATURES[settings.FREE_PLAN].get("aiExplainDailyLimit", 20) or 20)
+        actor_key = self.ai_repository.usage_actor_key(
+            subject_type="user",
+            subject_id="free-user",
+        )
         with mock.patch.object(service, "_provider_explain", return_value=(structured, "mock")):
             first = service.explain(
-                user_id="free-user",
+                subject_type="user",
+                subject_id="free-user",
                 plan=settings.FREE_PLAN,
                 sentence="春の駅だ。",
                 context={"chapter": "第一章"},
             )
             second = service.explain(
-                user_id="free-user",
+                subject_type="user",
+                subject_id="free-user",
                 plan=settings.FREE_PLAN,
                 sentence="春の駅だ。",
                 context={"chapter": "第一章"},
             )
             self.assertFalse(first["cached"])
             self.assertTrue(second["cached"])
-            for idx in range(4):
+            for idx in range(max(0, free_limit - 2)):
                 service.explain(
-                    user_id="free-user",
+                    subject_type="user",
+                    subject_id="free-user",
                     plan=settings.FREE_PLAN,
                     sentence=f"別の文{idx}です。",
                     context={"chapter": "第一章", "idx": idx},
                 )
             with self.assertRaises(AIExplainLimitError):
                 service.explain(
-                    user_id="free-user",
+                    subject_type="user",
+                    subject_id="free-user",
                     plan=settings.FREE_PLAN,
-                    sentence="六回目の文です。",
+                    sentence="超限文です。",
                     context={"chapter": "第一章", "idx": 99},
                 )
         self.assertEqual(
-            self.ai_repository.count_uncached_usage_since(user_id="free-user", since_ms=0),
-            5,
+            self.ai_repository.count_uncached_usage_since(user_id=actor_key, since_ms=0),
+            max(0, free_limit - 1),
         )
+
+    def test_ai_explain_guest_and_user_usage_are_isolated(self) -> None:
+        service = AIExplainService(self.ai_repository)
+        structured = {
+            "translation": "测试翻译",
+            "grammar": ["语法点"],
+            "notes": ["说明"],
+            "difficulty": "N4",
+        }
+        guest_limit = int(settings.AI_EXPLAIN_ANON_DAILY_LIMIT or 3)
+        with mock.patch.object(service, "_provider_explain", return_value=(structured, "mock")):
+            for idx in range(guest_limit):
+                service.explain(
+                    subject_type="guest",
+                    subject_id="guest_cookie_a",
+                    plan=settings.FREE_PLAN,
+                    sentence=f"游客句子{idx}。",
+                    context={"chapter": "第一章", "idx": idx},
+                )
+            with self.assertRaises(AIExplainLimitError):
+                service.explain(
+                    subject_type="guest",
+                    subject_id="guest_cookie_a",
+                    plan=settings.FREE_PLAN,
+                    sentence="游客超限句。",
+                    context={"chapter": "第一章", "idx": 100},
+                )
+
+            # Same subject_id but different subject_type should not share guest quota.
+            user_result = service.explain(
+                subject_type="user",
+                subject_id="guest_cookie_a",
+                plan=settings.FREE_PLAN,
+                sentence="注册用户句子。",
+                context={"chapter": "第一章", "idx": 200},
+            )
+            self.assertFalse(user_result["cached"])
 
     def test_import_jobs_recover_and_dedupe_by_hash(self) -> None:
         service = self.build_library_service()

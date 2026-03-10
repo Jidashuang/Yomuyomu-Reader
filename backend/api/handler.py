@@ -36,6 +36,7 @@ import zipfile
 from datetime import datetime, timezone
 from functools import lru_cache
 from html.parser import HTMLParser
+from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, quote_plus, urlencode, urlparse
@@ -68,7 +69,12 @@ from backend.repositories.progress import ReadingProgressRepository
 from backend.repositories.sync import SyncSnapshotRepository
 from backend.repositories.users import UserRepository
 from backend.services.account_service import AccountService
-from backend.services.ai_service import AIExplainLimitError, AIExplainService
+from backend.services.ai_service import (
+    AIExplainLimitError,
+    AIExplainNotConfiguredError,
+    AIExplainProviderError,
+    AIExplainService,
+)
 from backend.services.analysis_service import ChapterAnalysisService
 from backend.services.ops_service import OpsService
 from backend.services.import_service import parse_book as service_parse_book
@@ -140,6 +146,7 @@ ALIPAY_PAY_ENTRY_URL = os.getenv("ALIPAY_PAY_ENTRY_URL", "").strip()
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
 STRIPE_PRICE_ID_MONTHLY = os.getenv("STRIPE_PRICE_ID_MONTHLY", "").strip()
 STRIPE_PRICE_ID_YEARLY = os.getenv("STRIPE_PRICE_ID_YEARLY", "").strip()
+STRIPE_PAYMENT_LINK_MONTHLY = os.getenv("STRIPE_PAYMENT_LINK_MONTHLY", "").strip()
 STRIPE_SUCCESS_URL = os.getenv("STRIPE_SUCCESS_URL", "").strip()
 STRIPE_CANCEL_URL = os.getenv("STRIPE_CANCEL_URL", "").strip()
 STRIPE_PORTAL_RETURN_URL = os.getenv("STRIPE_PORTAL_RETURN_URL", "").strip()
@@ -194,6 +201,7 @@ PLAN_FEATURES = settings.PLAN_FEATURES
 APP_BASE_URL = settings.APP_BASE_URL
 BILLING_ALLOW_MANUAL_PLAN_CHANGE = settings.BILLING_ALLOW_MANUAL_PLAN_CHANGE
 BILLING_ADMIN_TOKEN = settings.BILLING_ADMIN_TOKEN
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "").strip() or BILLING_ADMIN_TOKEN
 WECHAT_PAY_ENABLED = settings.WECHAT_PAY_ENABLED
 ALIPAY_PAY_ENABLED = settings.ALIPAY_PAY_ENABLED
 STRIPE_PAY_ENABLED = settings.STRIPE_PAY_ENABLED
@@ -202,6 +210,7 @@ ALIPAY_PAY_ENTRY_URL = settings.ALIPAY_PAY_ENTRY_URL
 STRIPE_SECRET_KEY = settings.STRIPE_SECRET_KEY
 STRIPE_PRICE_ID_MONTHLY = settings.STRIPE_PRICE_ID_MONTHLY
 STRIPE_PRICE_ID_YEARLY = settings.STRIPE_PRICE_ID_YEARLY
+STRIPE_PAYMENT_LINK_MONTHLY = settings.STRIPE_PAYMENT_LINK_MONTHLY
 STRIPE_SUCCESS_URL = settings.STRIPE_SUCCESS_URL
 STRIPE_CANCEL_URL = settings.STRIPE_CANCEL_URL
 STRIPE_PORTAL_RETURN_URL = settings.STRIPE_PORTAL_RETURN_URL
@@ -244,7 +253,10 @@ def json_response(handler: SimpleHTTPRequestHandler, status: int, payload: dict)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
     handler.send_header("Access-Control-Allow-Origin", "*")
-    handler.send_header("Access-Control-Allow-Headers", "Content-Type,X-Admin-Token,X-Payment-Token")
+    handler.send_header(
+        "Access-Control-Allow-Headers",
+        "Content-Type,X-Admin-Token,X-Payment-Token,X-Account-Token",
+    )
     handler.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
     handler.end_headers()
     handler.wfile.write(body)
@@ -256,7 +268,10 @@ def text_response(handler: SimpleHTTPRequestHandler, status: int, text: str) -> 
     handler.send_header("Content-Type", "text/plain; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
     handler.send_header("Access-Control-Allow-Origin", "*")
-    handler.send_header("Access-Control-Allow-Headers", "Content-Type,X-Admin-Token,X-Payment-Token")
+    handler.send_header(
+        "Access-Control-Allow-Headers",
+        "Content-Type,X-Admin-Token,X-Payment-Token,X-Account-Token",
+    )
     handler.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
     handler.end_headers()
     handler.wfile.write(body)
@@ -276,6 +291,11 @@ def normalize_plan(value: str | None) -> str:
     return raw if raw in PLAN_FEATURES else FREE_PLAN
 
 
+def normalize_plan_status(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    return "active" if raw == "active" else "inactive"
+
+
 def normalize_pay_channel(value: str | None) -> str:
     raw = str(value or "").strip().lower()
     return raw if raw in PAY_CHANNELS else PAY_CHANNEL_WECHAT
@@ -293,11 +313,7 @@ def normalize_subscription_status(value: str | None) -> str:
 
 
 def payment_channels() -> dict[str, bool]:
-    return {
-        PAY_CHANNEL_WECHAT: WECHAT_PAY_ENABLED,
-        PAY_CHANNEL_ALIPAY: ALIPAY_PAY_ENABLED,
-        PAY_CHANNEL_STRIPE: stripe_runtime_enabled(),
-    }
+    return settings.payment_channels()
 
 
 def any_payment_channel_enabled() -> bool:
@@ -327,6 +343,15 @@ def stripe_price_id(interval: str) -> str:
 
 def stripe_checkout_enabled() -> bool:
     return bool(stripe_runtime_enabled() and (STRIPE_PRICE_ID_MONTHLY or STRIPE_PRICE_ID_YEARLY))
+
+
+def stripe_payment_link_url() -> str:
+    raw = str(STRIPE_PAYMENT_LINK_MONTHLY or "").strip()
+    return raw if is_abs_http_url(raw) else ""
+
+
+def stripe_payment_link_enabled() -> bool:
+    return bool(STRIPE_PAY_ENABLED and stripe_payment_link_url())
 
 
 def stripe_runtime_enabled() -> bool:
@@ -1376,8 +1401,14 @@ class ApiHandler(SimpleHTTPRequestHandler):
 
     def end_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type,X-Admin-Token,X-Payment-Token")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Content-Type,X-Admin-Token,X-Payment-Token,X-Account-Token",
+        )
         self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+        for cookie_header in list(getattr(self, "_pending_response_cookies", [])):
+            self.send_header("Set-Cookie", cookie_header)
+        self._pending_response_cookies = []
         super().end_headers()
 
     def do_OPTIONS(self) -> None:  # noqa: N802
@@ -1404,6 +1435,72 @@ class ApiHandler(SimpleHTTPRequestHandler):
         if forwarded:
             return forwarded
         return str(self.client_address[0] if self.client_address else "").strip() or "127.0.0.1"
+
+    def request_is_secure(self) -> bool:
+        forwarded_proto = str(self.headers.get("X-Forwarded-Proto", "") or "").split(",")[0].strip().lower()
+        if forwarded_proto:
+            return forwarded_proto == "https"
+        origin = str(self.headers.get("Origin", "") or "").strip().lower()
+        return origin.startswith("https://")
+
+    def request_cookie_value(self, cookie_name: str) -> str:
+        raw_cookie = str(self.headers.get("Cookie", "") or "").strip()
+        target = str(cookie_name or "").strip()
+        if not raw_cookie or not target:
+            return ""
+        parser = SimpleCookie()
+        try:
+            parser.load(raw_cookie)
+        except Exception:
+            return ""
+        morsel = parser.get(target)
+        return str(morsel.value or "").strip() if morsel is not None else ""
+
+    def queue_response_cookie(self, cookie_header: str) -> None:
+        normalized = str(cookie_header or "").strip()
+        if not normalized:
+            return
+        pending = list(getattr(self, "_pending_response_cookies", []))
+        pending.append(normalized)
+        self._pending_response_cookies = pending
+
+    def build_anonymous_cookie_header(self, anonymous_id: str) -> str:
+        encoded_value = quote(str(anonymous_id or "").strip(), safe="")
+        parts = [
+            f"{settings.ANONYMOUS_ID_COOKIE_NAME}={encoded_value}",
+            "Path=/",
+            f"Max-Age={int(settings.ANONYMOUS_ID_COOKIE_MAX_AGE_SECONDS)}",
+            "HttpOnly",
+            "SameSite=Lax",
+        ]
+        if self.request_is_secure():
+            parts.append("Secure")
+        return "; ".join(parts)
+
+    def resolve_explain_subject(self, payload: dict | None = None) -> dict:
+        token = self.account_token_from_request(payload)
+        if token:
+            account = self.user_repository.find_by_token(token)
+            if account and bool(account.get("isRegistered")):
+                resolved_user_id = sanitize_user_id(str(account.get("userId", "") or ""))
+                if resolved_user_id and resolved_user_id != "default":
+                    return {
+                        "subjectType": "user",
+                        "subjectId": resolved_user_id,
+                        "billingUserId": resolved_user_id,
+                        "accountMode": "registered",
+                    }
+        raw_cookie_id = self.request_cookie_value(settings.ANONYMOUS_ID_COOKIE_NAME)
+        anonymous_id = sanitize_user_id(raw_cookie_id)
+        if not anonymous_id or anonymous_id == "default":
+            anonymous_id = f"guest_{secrets.token_hex(8)}"
+            self.queue_response_cookie(self.build_anonymous_cookie_header(anonymous_id))
+        return {
+            "subjectType": "guest",
+            "subjectId": anonymous_id,
+            "billingUserId": anonymous_id,
+            "accountMode": "guest",
+        }
 
     def account_mode(self, user_id: str) -> str:
         return "registered" if self.user_repository.is_registered(user_id) else "guest"
@@ -1483,17 +1580,6 @@ class ApiHandler(SimpleHTTPRequestHandler):
                     billing=billing,
                 )
                 return None
-            authorized = self.require_registered_account(user_id=user_id, payload=payload, billing=billing)
-            if authorized is None:
-                return None
-            if file_ext != "txt" and not billing["features"]["advancedImport"]:
-                self.respond_entitlement_error(
-                    status=402,
-                    code="PRO_REQUIRED",
-                    error="EPUB/PDF/MOBI 导入仅对 Pro 套餐开放。",
-                    billing=billing,
-                )
-                return None
             return billing
         if feature.startswith("sync"):
             authorized = self.require_registered_account(user_id=user_id, payload=payload, billing=billing)
@@ -1520,16 +1606,34 @@ class ApiHandler(SimpleHTTPRequestHandler):
             },
         )
 
-    def billing_payload(self, user_id: str) -> dict:
-        billing = self.billing_store.get_billing(user_id)
+    def billing_payload(
+        self,
+        user_id: str,
+        *,
+        usage_subject_type: str | None = None,
+        usage_subject_id: str | None = None,
+    ) -> dict:
+        normalized_user_id = sanitize_user_id(user_id)
+        billing = self.billing_store.get_billing(normalized_user_id)
+        stripe_link = stripe_payment_link_url()
+        stripe_link_ready = self._stripe_payment_link_ready()
+        stripe_checkout_ready = self._stripe_checkout_ready()
         billing["paymentChannels"] = payment_channels()
+        billing["paymentEnabled"] = settings.payment_enabled()
         billing["manualPlanChangeEnabled"] = BILLING_ALLOW_MANUAL_PLAN_CHANGE
         billing["manualPaymentConfirmEnabled"] = BILLING_ALLOW_MANUAL_PAYMENT_CONFIRM
         billing["priceFen"] = PRO_PRICE_FEN
         billing["orderExpireMinutes"] = ORDER_EXPIRE_MINUTES
         billing["stripe"] = {
-            "checkoutReady": self._stripe_checkout_ready(),
+            "checkoutReady": stripe_checkout_ready,
             "portalReady": self._stripe_portal_ready(),
+            "paymentLinkReady": stripe_link_ready,
+            "paymentLink": stripe_link if stripe_link_ready else "",
+            "paymentMode": (
+                "payment_link"
+                if stripe_link_ready
+                else ("checkout" if stripe_checkout_ready else "none")
+            ),
             "intervals": {
                 "monthly": bool(STRIPE_PRICE_ID_MONTHLY),
                 "yearly": bool(STRIPE_PRICE_ID_YEARLY),
@@ -1541,13 +1645,19 @@ class ApiHandler(SimpleHTTPRequestHandler):
         billing["officialGateway"] = {
             PAY_CHANNEL_WECHAT: self._wechat_official_order_ready(),
             PAY_CHANNEL_ALIPAY: self._alipay_official_order_ready(),
-            PAY_CHANNEL_STRIPE: self._stripe_checkout_ready(),
+            PAY_CHANNEL_STRIPE: bool(stripe_link_ready or stripe_checkout_ready),
         }
-        billing["accountMode"] = self.account_mode(user_id)
+        billing["accountMode"] = self.account_mode(normalized_user_id)
+        normalized_subject_type = str(usage_subject_type or "").strip().lower()
+        normalized_subject_id = str(usage_subject_id or "").strip()
+        if normalized_subject_type not in {"user", "guest", "guest_ip"}:
+            normalized_subject_type = "user" if billing["accountMode"] == "registered" else "guest"
+        if not normalized_subject_id:
+            normalized_subject_id = normalized_user_id
         usage_stats = self.ai_explain_service.daily_usage_stats(
-            user_id=user_id,
+            subject_type=normalized_subject_type,
+            subject_id=normalized_subject_id,
             plan=billing["plan"],
-            is_anonymous=billing["accountMode"] != "registered",
         )
         billing["features"]["aiExplainDailyLimit"] = usage_stats["dailyLimit"]
         billing["aiExplainUsedToday"] = usage_stats["usedToday"]
@@ -1599,6 +1709,10 @@ class ApiHandler(SimpleHTTPRequestHandler):
     @staticmethod
     def _stripe_checkout_ready() -> bool:
         return stripe_checkout_enabled()
+
+    @staticmethod
+    def _stripe_payment_link_ready() -> bool:
+        return stripe_payment_link_enabled()
 
     @staticmethod
     def _stripe_portal_ready() -> bool:
@@ -1728,6 +1842,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
             source=source,
             last_paid_channel=PAY_CHANNEL_STRIPE,
             last_order_id=last_order_id,
+            plan_status="active" if target_plan == PRO_PLAN else "inactive",
             subscription_status=status,
             plan_expire_at=period_end_ms if period_end_ms > 0 else 0,
             stripe_customer_id=customer_id,
@@ -2120,6 +2235,13 @@ class ApiHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path in {"/admin", "/admin/"}:
+            self.path = "/admin.html"
+            super().do_GET()
+            return
+        if parsed.path in {"/ops.html", "/ops.js"} and not BILLING_ADMIN_TOKEN:
+            self.send_error(404)
+            return
         if parsed.path == "/api/health":
             json_response(
                 self,
@@ -2139,7 +2261,10 @@ class ApiHandler(SimpleHTTPRequestHandler):
                             "notify": self._alipay_official_notify_ready(),
                         },
                         PAY_CHANNEL_STRIPE: {
-                            "order": self._stripe_checkout_ready(),
+                            "order": bool(
+                                self._stripe_payment_link_ready()
+                                or self._stripe_checkout_ready()
+                            ),
                             "notify": bool(stripe_runtime_enabled() and STRIPE_WEBHOOK_SECRET),
                         },
                     },
@@ -2148,6 +2273,12 @@ class ApiHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/admin/ops/daily":
             self.handle_admin_ops_daily()
+            return
+        if parsed.path == "/api/admin/users":
+            self.handle_admin_users()
+            return
+        if parsed.path == "/api/admin/ai-usage":
+            self.handle_admin_ai_usage()
             return
         if parsed.path == "/api/export/vocab":
             self.handle_export_vocab()
@@ -2185,6 +2316,24 @@ class ApiHandler(SimpleHTTPRequestHandler):
             user_id = sanitize_user_id(query.get("userId", ["default"])[0])
             json_response(self, 200, {"ok": True, "billing": self.billing_payload(user_id)})
             return
+        if parsed.path == "/api/payment/options":
+            if not settings.payment_enabled():
+                json_response(self, 200, {"enabled": False})
+                return
+            json_response(
+                self,
+                200,
+                {
+                    "enabled": True,
+                    "channels": payment_channels(),
+                    "stripe": {
+                        "paymentLinkReady": self._stripe_payment_link_ready(),
+                        "paymentLink": stripe_payment_link_url(),
+                        "checkoutReady": self._stripe_checkout_ready(),
+                    },
+                },
+            )
+            return
         if parsed.path == "/api/billing/order-status":
             self.handle_billing_order_status()
             return
@@ -2198,6 +2347,10 @@ class ApiHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        admin_plan_match = re.fullmatch(r"/api/admin/users/([^/]+)/plan", parsed.path)
+        if admin_plan_match:
+            self.handle_admin_user_plan_update(admin_plan_match.group(1))
+            return
         delete_book_match = re.fullmatch(r"/api/books/([^/]+)/delete", parsed.path)
         if delete_book_match:
             self.handle_delete_book(delete_book_match.group(1))
@@ -2211,6 +2364,9 @@ class ApiHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/auth/register":
             self.handle_auth_register()
+            return
+        if parsed.path == "/api/auth/login":
+            self.handle_auth_login()
             return
         if parsed.path == "/api/feedback":
             self.handle_feedback()
@@ -2470,6 +2626,92 @@ class ApiHandler(SimpleHTTPRequestHandler):
         if payload is None:
             json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
             return
+        username = self.user_repository.normalize_username(str(payload.get("username", "") or ""))
+        password = str(payload.get("password", "") or "")
+        if username or password:
+            if not self.user_repository.valid_username(username):
+                json_response(
+                    self,
+                    400,
+                    {
+                        "ok": False,
+                        "code": "INVALID_USERNAME",
+                        "error": "用户名仅支持 3-32 位小写字母、数字、下划线和连字符。",
+                    },
+                )
+                return
+            if username in {"default"} or username.startswith("guest_") or username.startswith("guest-"):
+                json_response(
+                    self,
+                    400,
+                    {
+                        "ok": False,
+                        "code": "INVALID_USERNAME",
+                        "error": "用户名不可使用 guest/default 保留前缀。",
+                    },
+                )
+                return
+            if len(password) < 8:
+                json_response(
+                    self,
+                    400,
+                    {
+                        "ok": False,
+                        "code": "WEAK_PASSWORD",
+                        "error": "密码至少需要 8 位。",
+                    },
+                )
+                return
+            if self.user_repository.find_by_username(username):
+                json_response(
+                    self,
+                    409,
+                    {
+                        "ok": False,
+                        "code": "USERNAME_EXISTS",
+                        "error": "该用户名已存在，请换一个。",
+                    },
+                )
+                return
+            user_id = sanitize_user_id(username)
+            result, error = self.account_service.register_account(
+                user_id=user_id,
+                local_snapshot=payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else {},
+                anonymous_id=str(payload.get("anonymousId", "") or "").strip(),
+                display_name=username,
+            )
+            if result is None:
+                json_response(
+                    self,
+                    409,
+                    {
+                        "ok": False,
+                        "code": "ACCOUNT_EXISTS",
+                        "error": error or "该用户名已存在。",
+                    },
+                )
+                return
+            if not self.user_repository.set_credentials(
+                user_id=user_id,
+                username=username,
+                password_hash=self.user_repository.hash_password(password),
+            ):
+                json_response(
+                    self,
+                    409,
+                    {
+                        "ok": False,
+                        "code": "USERNAME_EXISTS",
+                        "error": "该用户名已存在，请换一个。",
+                    },
+                )
+                return
+            refreshed_user = self.user_repository.get_user(user_id)
+            if refreshed_user is not None:
+                result["account"] = refreshed_user
+            result["userId"] = user_id
+            json_response(self, 200, {"ok": True, **result})
+            return
         user_id = sanitize_user_id(str(payload.get("userId", "") or ""))
         if not user_id or user_id == "default" or user_id.startswith("guest_") or user_id.startswith("guest-"):
             json_response(
@@ -2500,6 +2742,38 @@ class ApiHandler(SimpleHTTPRequestHandler):
             )
             return
         json_response(self, 200, {"ok": True, **result})
+
+    def handle_auth_login(self) -> None:
+        payload = self.read_json_body()
+        if payload is None:
+            json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
+            return
+        username = self.user_repository.normalize_username(str(payload.get("username", "") or ""))
+        password = str(payload.get("password", "") or "")
+        account = self.user_repository.authenticate(username=username, password=password)
+        if account is None:
+            json_response(
+                self,
+                401,
+                {
+                    "ok": False,
+                    "code": "INVALID_CREDENTIALS",
+                    "error": "用户名或密码错误。",
+                },
+            )
+            return
+        json_response(
+            self,
+            200,
+            {
+                "ok": True,
+                "account": {
+                    "userId": account["userId"],
+                    "username": account["username"] or username,
+                    "accountToken": account["accountToken"],
+                },
+            },
+        )
 
     def handle_feedback(self) -> None:
         payload = self.read_json_body()
@@ -2589,21 +2863,128 @@ class ApiHandler(SimpleHTTPRequestHandler):
         json_response(self, 200, {"ok": True, **self.account_service.export_progress(user_id)})
 
     def handle_admin_ops_daily(self) -> None:
-        if BILLING_ADMIN_TOKEN:
-            provided = str(self.headers.get("X-Admin-Token", "") or "").strip()
-            if provided != BILLING_ADMIN_TOKEN:
-                json_response(
-                    self,
-                    403,
-                    {"ok": False, "code": "INVALID_ADMIN_TOKEN", "error": "管理员令牌无效。"},
-                )
-                return
+        if not BILLING_ADMIN_TOKEN:
+            json_response(
+                self,
+                404,
+                {"ok": False, "code": "OPS_DISABLED", "error": "Admin ops 未启用。"},
+            )
+            return
+        provided = str(self.headers.get("X-Admin-Token", "") or "").strip()
+        if provided != BILLING_ADMIN_TOKEN:
+            json_response(
+                self,
+                403,
+                {"ok": False, "code": "INVALID_ADMIN_TOKEN", "error": "管理员令牌无效。"},
+            )
+            return
         query = parse_qs(urlparse(self.path).query)
         try:
             days = int(query.get("days", ["14"])[0] or 14)
         except ValueError:
             days = 14
         json_response(self, 200, {"ok": True, "rows": self.ops_service.daily_metrics(days=days)})
+
+    def _require_admin_token(self) -> bool:
+        if not ADMIN_TOKEN:
+            json_response(
+                self,
+                403,
+                {
+                    "ok": False,
+                    "code": "ADMIN_TOKEN_REQUIRED",
+                    "error": "请先配置 ADMIN_TOKEN。",
+                },
+            )
+            return False
+        provided = str(self.headers.get("X-Admin-Token", "") or "").strip()
+        if provided != ADMIN_TOKEN:
+            json_response(
+                self,
+                403,
+                {"ok": False, "code": "INVALID_ADMIN_TOKEN", "error": "管理员令牌无效。"},
+            )
+            return False
+        return True
+
+    def handle_admin_users(self) -> None:
+        if not self._require_admin_token():
+            return
+        users = []
+        for row in self.user_repository.list_admin_users():
+            user_id = str(row.get("userId", "") or "")
+            billing = self.billing_store.get_billing(user_id)
+            created_at = int(row.get("createdAt", 0) or 0)
+            users.append(
+                {
+                    "userId": user_id,
+                    "username": str(row.get("username", "") or ""),
+                    "createdAt": (
+                        datetime.fromtimestamp(created_at / 1000, tz=timezone.utc)
+                        .isoformat()
+                        .replace("+00:00", "Z")
+                        if created_at > 0
+                        else ""
+                    ),
+                    "planName": str(billing.get("planName", "") or "free"),
+                    "planStatus": str(billing.get("planStatus", "") or "inactive"),
+                    "updatedAt": int(billing.get("updatedAt", 0) or 0),
+                }
+            )
+        json_response(self, 200, {"ok": True, "users": users})
+
+    def handle_admin_ai_usage(self) -> None:
+        if not self._require_admin_token():
+            return
+        query = parse_qs(urlparse(self.path).query)
+        try:
+            limit = max(1, min(1000, int(query.get("limit", ["200"])[0] or 200)))
+        except ValueError:
+            limit = 200
+        rows = self.ai_repository.list_recent_daily_usage(limit=limit)
+        events = self.ai_repository.list_recent_usage_events(limit=limit)
+        for row in rows:
+            row["lastUsedAtIso"] = utc_iso8601(int(row.get("lastUsedAt", 0) or 0))
+        for row in events:
+            row["createdAtIso"] = utc_iso8601(int(row.get("createdAt", 0) or 0))
+        json_response(
+            self,
+            200,
+            {
+                "ok": True,
+                "rows": rows,
+                "events": events,
+            },
+        )
+
+    def handle_admin_user_plan_update(self, raw_user_id: str) -> None:
+        if not self._require_admin_token():
+            return
+        payload = self.read_json_body()
+        if payload is None:
+            json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
+            return
+        user_id = sanitize_user_id(raw_user_id)
+        if not self.user_repository.get_user(user_id):
+            json_response(
+                self,
+                404,
+                {"ok": False, "code": "USER_NOT_FOUND", "error": "用户不存在。"},
+            )
+            return
+        plan = normalize_plan(str(payload.get("plan", FREE_PLAN)))
+        status = normalize_plan_status(
+            str(payload.get("status", "active" if plan == PRO_PLAN else "inactive"))
+        )
+        self.billing_store.set_plan(
+            user_id,
+            plan,
+            source="admin-manual",
+            plan_status=status,
+            subscription_status="manual",
+            billing_state="active" if status == "active" else "inactive",
+        )
+        json_response(self, 200, {"ok": True, "billing": self.billing_payload(user_id)})
 
     def _sync_plan_from_paid_order(self, order: dict) -> dict:
         if normalize_pay_channel(order.get("channel")) == PAY_CHANNEL_STRIPE:
@@ -2616,6 +2997,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
             source=order.get("channel", "payment"),
             last_paid_channel=order.get("channel", ""),
             last_order_id=order.get("orderId", ""),
+            plan_status="active",
             subscription_status="paid",
             plan_expire_at=expire_at,
             grace_until_at=0,
@@ -2797,6 +3179,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
             200,
             {
                 "ok": True,
+                "url": checkout_url,
                 "checkoutUrl": checkout_url,
                 "sessionId": str(session.get("id", "") or "").strip(),
                 "interval": interval,
@@ -3164,26 +3547,34 @@ class ApiHandler(SimpleHTTPRequestHandler):
             json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
             return
         sentence = str(payload.get("sentence", "") or "")
-        user_id = sanitize_user_id(str(payload.get("userId", "default") or "default"))
-        billing = self.gate_plan_access(user_id=user_id, feature="ai_explain", payload=payload)
+        subject = self.resolve_explain_subject(payload)
+        subject_type = str(subject.get("subjectType", "guest") or "guest").strip().lower()
+        subject_id = str(subject.get("subjectId", "") or "").strip()
+        billing_user_id = sanitize_user_id(str(subject.get("billingUserId", "default") or "default"))
+        if not subject_id:
+            subject_id = billing_user_id
+
+        billing = self.gate_plan_access(user_id=billing_user_id, feature="ai_explain", payload=payload)
         if billing is None:
             return
-        allow_user, retry_after_user = self.ai_rate_limiter.check(
-            key=f"explain:user:{user_id}",
+
+        allow_subject, retry_after_subject = self.ai_rate_limiter.check(
+            key=f"explain:{subject_type}:{subject_id}",
             limit=settings.AI_EXPLAIN_RATE_LIMIT_MAX_PER_USER,
             window_seconds=settings.AI_EXPLAIN_RATE_LIMIT_WINDOW_SECONDS,
         )
-        if not allow_user:
+        if not allow_subject:
             self.respond_entitlement_error(
                 status=429,
                 code="AI_EXPLAIN_RATE_LIMITED",
-                error=f"解释请求过于频繁，请 {retry_after_user} 秒后再试。",
+                error=f"解释请求过于频繁，请 {retry_after_subject} 秒后再试。",
                 billing=billing,
-                extra={"retryAfterSeconds": retry_after_user},
+                extra={"retryAfterSeconds": retry_after_subject},
             )
             return
+        request_ip = self.client_ip()
         allow_ip, retry_after_ip = self.ai_rate_limiter.check(
-            key=f"explain:ip:{self.client_ip()}",
+            key=f"explain:ip:{request_ip}",
             limit=settings.AI_EXPLAIN_RATE_LIMIT_MAX_PER_IP,
             window_seconds=settings.AI_EXPLAIN_RATE_LIMIT_WINDOW_SECONDS,
         )
@@ -3196,11 +3587,35 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 extra={"retryAfterSeconds": retry_after_ip},
             )
             return
+        guest_ip_quota_reserved = False
+        if subject_type == "guest" and settings.AI_EXPLAIN_GUEST_IP_DAILY_LIMIT > 0:
+            guest_ip_quota_reserved = self.ai_repository.reserve_daily_usage(
+                subject_type="guest_ip",
+                subject_id=request_ip,
+                daily_limit=settings.AI_EXPLAIN_GUEST_IP_DAILY_LIMIT,
+            )
+            if not guest_ip_quota_reserved:
+                billing = self.billing_payload(
+                    billing_user_id,
+                    usage_subject_type=subject_type,
+                    usage_subject_id=subject_id,
+                )
+                json_response(
+                    self,
+                    429,
+                    {
+                        "ok": False,
+                        "code": "EXPLAIN_LIMIT_REACHED",
+                        "error": "You have reached today's AI explanation limit.",
+                        "billing": billing,
+                    },
+                )
+                return
         try:
             result = self.ai_explain_service.explain(
-                user_id=user_id,
+                subject_type=subject_type,
+                subject_id=subject_id,
                 plan=billing["plan"],
-                is_anonymous=billing["accountMode"] != "registered",
                 sentence=sentence,
                 context=payload.get("context"),
                 mode=str(payload.get("mode", "reader") or "reader"),
@@ -3208,6 +3623,11 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 prompt_version=str(payload.get("promptVersion", "") or ""),
             )
         except ValueError as exc:
+            if guest_ip_quota_reserved:
+                self.ai_repository.release_daily_usage(
+                    subject_type="guest_ip",
+                    subject_id=request_ip,
+                )
             json_response(
                 self,
                 400,
@@ -3215,45 +3635,99 @@ class ApiHandler(SimpleHTTPRequestHandler):
             )
             return
         except AIExplainLimitError as exc:
+            if guest_ip_quota_reserved:
+                self.ai_repository.release_daily_usage(
+                    subject_type="guest_ip",
+                    subject_id=request_ip,
+                )
+            billing = self.billing_payload(
+                billing_user_id,
+                usage_subject_type=subject_type,
+                usage_subject_id=subject_id,
+            )
             json_response(
                 self,
                 429,
                 {
                     "ok": False,
-                    "code": "AI_EXPLAIN_LIMIT_REACHED",
+                    "code": "EXPLAIN_LIMIT_REACHED",
+                    "error": str(exc),
+                    "billing": billing,
+                },
+            )
+            return
+        except AIExplainNotConfiguredError as exc:
+            if guest_ip_quota_reserved:
+                self.ai_repository.release_daily_usage(
+                    subject_type="guest_ip",
+                    subject_id=request_ip,
+                )
+            json_response(
+                self,
+                503,
+                {
+                    "ok": False,
+                    "code": "AI_NOT_CONFIGURED",
+                    "error": str(exc),
+                    "billing": billing,
+                },
+            )
+            return
+        except AIExplainProviderError as exc:
+            if guest_ip_quota_reserved:
+                self.ai_repository.release_daily_usage(
+                    subject_type="guest_ip",
+                    subject_id=request_ip,
+                )
+            json_response(
+                self,
+                503,
+                {
+                    "ok": False,
+                    "code": "AI_PROVIDER_ERROR",
                     "error": str(exc),
                     "billing": billing,
                 },
             )
             return
         except RuntimeError as exc:
+            if guest_ip_quota_reserved:
+                self.ai_repository.release_daily_usage(
+                    subject_type="guest_ip",
+                    subject_id=request_ip,
+                )
             json_response(
                 self,
                 503,
                 {
                     "ok": False,
-                    "code": "AI_EXPLAIN_UNAVAILABLE",
+                    "code": "AI_PROVIDER_ERROR",
                     "error": str(exc),
                     "billing": billing,
                 },
             )
             return
-        billing = self.billing_payload(user_id)
+        billing = self.billing_payload(
+            billing_user_id,
+            usage_subject_type=subject_type,
+            usage_subject_id=subject_id,
+        )
         self.event_repository.track(
             "ai_explain_requested",
-            user_id=user_id,
+            user_id=billing_user_id,
             book_id=str(payload.get("bookId", "") or "").strip(),
             chapter_id=str(payload.get("chapterId", "") or "").strip(),
             payload={
                 "cached": bool(result.get("cached")),
                 "mode": str(payload.get("mode", "reader") or "reader"),
                 "model": result.get("model", ""),
+                "subjectType": subject_type,
             },
         )
         if result.get("cached"):
             self.event_repository.track(
                 "ai_explain_cache_hit",
-                user_id=user_id,
+                user_id=billing_user_id,
                 book_id=str(payload.get("bookId", "") or "").strip(),
                 chapter_id=str(payload.get("chapterId", "") or "").strip(),
             )
@@ -3302,26 +3776,45 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 },
             )
             return
-        if BILLING_ADMIN_TOKEN:
-            provided = str(self.headers.get("X-Admin-Token", "") or "").strip()
-            if provided != BILLING_ADMIN_TOKEN:
-                json_response(
-                    self,
-                    403,
-                    {
-                        "ok": False,
-                        "code": "INVALID_ADMIN_TOKEN",
-                        "error": "管理员令牌无效。",
-                    },
-                )
-                return
+        if not BILLING_ADMIN_TOKEN:
+            json_response(
+                self,
+                403,
+                {
+                    "ok": False,
+                    "code": "ADMIN_TOKEN_REQUIRED",
+                    "error": "请先配置 BILLING_ADMIN_TOKEN。",
+                },
+            )
+            return
+        provided = str(self.headers.get("X-Admin-Token", "") or "").strip()
+        if provided != BILLING_ADMIN_TOKEN:
+            json_response(
+                self,
+                403,
+                {
+                    "ok": False,
+                    "code": "INVALID_ADMIN_TOKEN",
+                    "error": "管理员令牌无效。",
+                },
+            )
+            return
         payload = self.read_json_body()
         if payload is None:
             json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
             return
         user_id = sanitize_user_id(str(payload.get("userId", "default")))
         plan = normalize_plan(str(payload.get("plan", FREE_PLAN)))
-        self.billing_store.set_plan(user_id, plan, source="manual")
+        status = normalize_plan_status(
+            str(payload.get("status", "active" if plan == PRO_PLAN else "inactive"))
+        )
+        self.billing_store.set_plan(
+            user_id,
+            plan,
+            source="manual",
+            plan_status=status,
+            billing_state="active" if status == "active" else "inactive",
+        )
         json_response(self, 200, {"ok": True, "billing": self.billing_payload(user_id)})
 
     def read_raw_body(self) -> bytes:

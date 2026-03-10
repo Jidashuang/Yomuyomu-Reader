@@ -94,7 +94,9 @@ class AppDatabase:
                 """
                 CREATE TABLE IF NOT EXISTS plans (
                   user_id TEXT PRIMARY KEY,
+                  plan_name TEXT NOT NULL DEFAULT 'free',
                   plan TEXT NOT NULL DEFAULT 'free',
+                  plan_status TEXT NOT NULL DEFAULT 'inactive',
                   updated_at INTEGER NOT NULL DEFAULT 0,
                   source TEXT NOT NULL DEFAULT 'manual',
                   last_paid_channel TEXT NOT NULL DEFAULT '',
@@ -192,6 +194,17 @@ class AppDatabase:
                   reservation_token TEXT NOT NULL DEFAULT ''
                 );
 
+                CREATE TABLE IF NOT EXISTS ai_explain_daily_usage (
+                  user_id TEXT NOT NULL,
+                  date TEXT NOT NULL,
+                  subject_type TEXT NOT NULL DEFAULT 'user',
+                  subject_id TEXT NOT NULL DEFAULT '',
+                  usage_date TEXT NOT NULL DEFAULT '',
+                  explain_count INTEGER NOT NULL DEFAULT 0,
+                  last_used_at INTEGER NOT NULL DEFAULT 0,
+                  PRIMARY KEY (user_id, date)
+                );
+
                 CREATE TABLE IF NOT EXISTS events (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   event_name TEXT NOT NULL,
@@ -223,6 +236,8 @@ class AppDatabase:
                   user_id TEXT PRIMARY KEY,
                   account_token TEXT NOT NULL DEFAULT '',
                   display_name TEXT NOT NULL DEFAULT '',
+                  username TEXT NOT NULL DEFAULT '',
+                  password_hash TEXT NOT NULL DEFAULT '',
                   is_registered INTEGER NOT NULL DEFAULT 0,
                   created_at INTEGER NOT NULL DEFAULT 0,
                   updated_at INTEGER NOT NULL DEFAULT 0,
@@ -250,6 +265,8 @@ class AppDatabase:
             self._ensure_column(conn, "ai_usage", "reservation_token", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "users", "account_token", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "users", "display_name", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "users", "username", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "users", "password_hash", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "users", "is_registered", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "users", "created_at", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "users", "updated_at", "INTEGER NOT NULL DEFAULT 0")
@@ -280,6 +297,8 @@ class AppDatabase:
                   ON ai_usage(user_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_ai_usage_reservation
                   ON ai_usage(user_id, reservation_token);
+                CREATE INDEX IF NOT EXISTS idx_ai_daily_usage_subject_date
+                  ON ai_explain_daily_usage(subject_type, subject_id, usage_date);
                 CREATE INDEX IF NOT EXISTS idx_events_name_created
                   ON events(event_name, created_at DESC);
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_account_token
@@ -295,6 +314,8 @@ class AppDatabase:
                   user_id TEXT PRIMARY KEY,
                   account_token TEXT NOT NULL DEFAULT '',
                   display_name TEXT NOT NULL DEFAULT '',
+                  username TEXT NOT NULL DEFAULT '',
+                  password_hash TEXT NOT NULL DEFAULT '',
                   is_registered INTEGER NOT NULL DEFAULT 0,
                   created_at INTEGER NOT NULL DEFAULT 0,
                   updated_at INTEGER NOT NULL DEFAULT 0,
@@ -308,6 +329,8 @@ class AppDatabase:
             self._ensure_column(conn, "plans", "billing_state", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "users", "account_token", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "users", "display_name", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "users", "username", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "users", "password_hash", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "users", "is_registered", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "users", "created_at", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "users", "updated_at", "INTEGER NOT NULL DEFAULT 0")
@@ -317,6 +340,112 @@ class AppDatabase:
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_account_token ON users(account_token)"
             )
             self._mark_migration(conn, "004_accounts_and_billing_state")
+
+        if "005_user_credentials" not in applied:
+            self._ensure_column(conn, "users", "username", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "users", "password_hash", "TEXT NOT NULL DEFAULT ''")
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username
+                  ON users(username)
+                  WHERE username <> ''
+                """
+            )
+            self._mark_migration(conn, "005_user_credentials")
+
+        if "006_ai_usage_and_plan_status" not in applied:
+            self._ensure_column(conn, "plans", "plan_name", "TEXT NOT NULL DEFAULT 'free'")
+            self._ensure_column(conn, "plans", "plan_status", "TEXT NOT NULL DEFAULT 'inactive'")
+            conn.execute(
+                """
+                UPDATE plans
+                SET plan_name = CASE
+                  WHEN TRIM(COALESCE(plan_name, '')) = '' THEN plan
+                  ELSE plan_name
+                END
+                """
+            )
+            conn.execute(
+                """
+                UPDATE plans
+                SET plan_status = CASE
+                  WHEN TRIM(COALESCE(plan_status, '')) <> '' THEN LOWER(plan_status)
+                  WHEN LOWER(COALESCE(plan_name, plan, 'free')) = 'pro' THEN 'active'
+                  ELSE 'inactive'
+                END
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ai_explain_daily_usage (
+                  user_id TEXT NOT NULL,
+                  date TEXT NOT NULL,
+                  subject_type TEXT NOT NULL DEFAULT 'user',
+                  subject_id TEXT NOT NULL DEFAULT '',
+                  usage_date TEXT NOT NULL DEFAULT '',
+                  explain_count INTEGER NOT NULL DEFAULT 0,
+                  last_used_at INTEGER NOT NULL DEFAULT 0,
+                  PRIMARY KEY (user_id, date)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_ai_daily_usage_last_used
+                  ON ai_explain_daily_usage(last_used_at DESC)
+                """
+            )
+            self._mark_migration(conn, "006_ai_usage_and_plan_status")
+
+        if "007_ai_explain_subject_usage" not in applied:
+            self._ensure_column(
+                conn,
+                "ai_explain_daily_usage",
+                "subject_type",
+                "TEXT NOT NULL DEFAULT 'user'",
+            )
+            self._ensure_column(
+                conn,
+                "ai_explain_daily_usage",
+                "subject_id",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                conn,
+                "ai_explain_daily_usage",
+                "usage_date",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            conn.execute(
+                """
+                UPDATE ai_explain_daily_usage
+                SET subject_type = CASE
+                      WHEN TRIM(COALESCE(subject_type, '')) = '' THEN 'user'
+                      ELSE subject_type
+                    END,
+                    subject_id = CASE
+                      WHEN TRIM(COALESCE(subject_id, '')) = '' THEN user_id
+                      ELSE subject_id
+                    END,
+                    usage_date = CASE
+                      WHEN TRIM(COALESCE(usage_date, '')) = '' THEN date
+                      ELSE usage_date
+                    END
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_ai_daily_usage_last_used
+                  ON ai_explain_daily_usage(last_used_at DESC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_daily_usage_subject_date
+                  ON ai_explain_daily_usage(subject_type, subject_id, usage_date)
+                """
+            )
+            self._mark_migration(conn, "007_ai_explain_subject_usage")
 
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, check_same_thread=False)

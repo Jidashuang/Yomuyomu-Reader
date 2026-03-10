@@ -25,11 +25,20 @@ from backend.config import (
     AI_EXPLAIN_TIMEOUT_SECONDS,
     FREE_PLAN,
     PLAN_FEATURES,
+    PRO_PLAN,
 )
 from backend.repositories.ai import AIExplainRepository
 
 
 class AIExplainLimitError(RuntimeError):
+    pass
+
+
+class AIExplainNotConfiguredError(RuntimeError):
+    pass
+
+
+class AIExplainProviderError(RuntimeError):
     pass
 
 
@@ -125,21 +134,35 @@ class AIExplainService:
     def _daily_limit(plan: str, *, is_anonymous: bool) -> int:
         if is_anonymous:
             return AI_EXPLAIN_ANON_DAILY_LIMIT
-        if plan != FREE_PLAN:
-            return -1
+        if plan == FREE_PLAN:
+            return int(PLAN_FEATURES[FREE_PLAN].get("aiExplainDailyLimit", 20) or 20)
+        if plan == PRO_PLAN:
+            return int(PLAN_FEATURES[PRO_PLAN].get("aiExplainDailyLimit", 500) or 500)
         return int(PLAN_FEATURES[FREE_PLAN].get("aiExplainDailyLimit", 0) or 0)
 
-    def daily_usage_stats(self, *, user_id: str, plan: str, is_anonymous: bool = False) -> dict:
-        limit = self._daily_limit(plan, is_anonymous=is_anonymous)
+    def daily_usage_stats(self, *, subject_type: str, subject_id: str, plan: str) -> dict:
+        normalized_type, normalized_id = self.repository.normalize_daily_subject(
+            subject_type,
+            subject_id,
+        )
+        limit = self._daily_limit(plan, is_anonymous=normalized_type != "user")
+        usage_date = self.repository.today_utc_date()
+        used_today = self.repository.daily_usage_count(
+            subject_type=normalized_type,
+            subject_id=normalized_id,
+            usage_date=usage_date,
+        )
         usage = self.repository.count_usage_since(
-            user_id=user_id,
+            user_id=self.repository.usage_actor_key(
+                subject_type=normalized_type,
+                subject_id=normalized_id,
+            ),
             since_ms=self._start_of_today_ms(),
         )
-        uncached_ok = int(usage.get("uncachedOk", 0) or 0)
-        remaining = -1 if limit < 0 else max(0, limit - uncached_ok)
+        remaining = -1 if limit < 0 else max(0, limit - used_today)
         return {
             "dailyLimit": limit,
-            "usedToday": uncached_ok,
+            "usedToday": used_today,
             "remainingToday": remaining,
             "cachedToday": int(usage.get("cachedTotal", 0) or 0),
             "limitedToday": int(usage.get("limitedTotal", 0) or 0),
@@ -160,15 +183,23 @@ class AIExplainService:
     def explain(
         self,
         *,
-        user_id: str,
+        subject_type: str,
+        subject_id: str,
         plan: str,
-        is_anonymous: bool = False,
         sentence: str,
         context=None,  # noqa: ANN001
         mode: str = "reader",
         model: str = "",
         prompt_version: str = "",
     ) -> dict:
+        normalized_type, normalized_id = self.repository.normalize_daily_subject(
+            subject_type,
+            subject_id,
+        )
+        usage_actor_key = self.repository.usage_actor_key(
+            subject_type=normalized_type,
+            subject_id=normalized_id,
+        )
         normalized_sentence = self.validate_sentence(sentence)
         normalized_context = self._normalize_context(context)
         meta = self._cache_metadata(
@@ -178,11 +209,37 @@ class AIExplainService:
             model=model or AI_EXPLAIN_MODEL,
             prompt_version=prompt_version or AI_EXPLAIN_PROMPT_VERSION,
         )
+        usage_date = self.repository.today_utc_date()
+        daily_limit = self._daily_limit(plan, is_anonymous=normalized_type != "user")
+        reserved_daily_quota = False
+        if daily_limit > 0:
+            reserved_daily_quota = self.repository.reserve_daily_usage(
+                subject_type=normalized_type,
+                subject_id=normalized_id,
+                daily_limit=daily_limit,
+                usage_date=usage_date,
+            )
+        if daily_limit > 0 and not reserved_daily_quota:
+            exc = AIExplainLimitError("You have reached today's AI explanation limit.")
+            self.repository.record_usage(
+                user_id=usage_actor_key,
+                cache_key=meta["cacheKey"],
+                sentence_hash=meta["sentenceHash"],
+                context_hash=meta["contextHash"],
+                mode=meta["mode"],
+                model=meta["model"],
+                prompt_version=meta["promptVersion"],
+                cached=False,
+                status="limited",
+                provider=AI_EXPLAIN_PROVIDER,
+                error_message=str(exc),
+            )
+            raise exc
 
         cached = self.repository.get_cached(meta["cacheKey"], AI_EXPLAIN_CACHE_TTL_SECONDS)
         if cached and isinstance(cached.get("response"), dict):
             self.repository.record_usage(
-                user_id=user_id,
+                user_id=usage_actor_key,
                 cache_key=meta["cacheKey"],
                 sentence_hash=meta["sentenceHash"],
                 context_hash=meta["contextHash"],
@@ -206,13 +263,31 @@ class AIExplainService:
         inflight, is_leader = self._claim_inflight(meta["cacheKey"])
         if not is_leader:
             if not inflight.event.wait(AI_EXPLAIN_SINGLEFLIGHT_WAIT_SECONDS):
-                raise RuntimeError("同句 explain 正在处理中，请稍后重试。")
+                if reserved_daily_quota:
+                    self.repository.release_daily_usage(
+                        subject_type=normalized_type,
+                        subject_id=normalized_id,
+                        usage_date=usage_date,
+                    )
+                raise AIExplainProviderError("Concurrent AI explain request timed out.")
             if inflight.error is not None:
+                if reserved_daily_quota:
+                    self.repository.release_daily_usage(
+                        subject_type=normalized_type,
+                        subject_id=normalized_id,
+                        usage_date=usage_date,
+                    )
                 raise inflight.error
             if inflight.result is None:
-                raise RuntimeError("同句 explain 处理结果缺失。")
+                if reserved_daily_quota:
+                    self.repository.release_daily_usage(
+                        subject_type=normalized_type,
+                        subject_id=normalized_id,
+                        usage_date=usage_date,
+                    )
+                raise AIExplainProviderError("Concurrent AI explain response missing.")
             self.repository.record_usage(
-                user_id=user_id,
+                user_id=usage_actor_key,
                 cache_key=meta["cacheKey"],
                 sentence_hash=meta["sentenceHash"],
                 context_hash=meta["contextHash"],
@@ -225,39 +300,7 @@ class AIExplainService:
             )
             return inflight.result
 
-        reservation_token = ""
         try:
-            daily_limit = self._daily_limit(plan, is_anonymous=is_anonymous)
-            if daily_limit > 0:
-                reservation_token = self.repository.reserve_uncached_usage(
-                    user_id=user_id,
-                    daily_limit=daily_limit,
-                    since_ms=self._start_of_today_ms(),
-                    cache_key=meta["cacheKey"],
-                    sentence_hash=meta["sentenceHash"],
-                    context_hash=meta["contextHash"],
-                    mode=meta["mode"],
-                    model=meta["model"],
-                    prompt_version=meta["promptVersion"],
-                )
-            if daily_limit > 0 and not reservation_token:
-                exc = AIExplainLimitError(
-                    f"Free 用户今日 AI explain 次数已用完（{daily_limit}/{daily_limit}）。"
-                )
-                self.repository.record_usage(
-                    user_id=user_id,
-                    cache_key=meta["cacheKey"],
-                    sentence_hash=meta["sentenceHash"],
-                    context_hash=meta["contextHash"],
-                    mode=meta["mode"],
-                    model=meta["model"],
-                    prompt_version=meta["promptVersion"],
-                    cached=False,
-                    status="limited",
-                    provider=AI_EXPLAIN_PROVIDER,
-                    error_message=str(exc),
-                )
-                raise exc
             try:
                 structured, provider = self._provider_explain(
                     sentence=normalized_sentence,
@@ -266,27 +309,25 @@ class AIExplainService:
                     model=meta["model"],
                 )
             except Exception as exc:
-                if reservation_token:
-                    self.repository.finalize_reservation(
-                        reservation_token=reservation_token,
-                        provider=AI_EXPLAIN_PROVIDER,
-                        status="error",
-                        error_message=str(exc),
+                if reserved_daily_quota:
+                    self.repository.release_daily_usage(
+                        subject_type=normalized_type,
+                        subject_id=normalized_id,
+                        usage_date=usage_date,
                     )
-                else:
-                    self.repository.record_usage(
-                        user_id=user_id,
-                        cache_key=meta["cacheKey"],
-                        sentence_hash=meta["sentenceHash"],
-                        context_hash=meta["contextHash"],
-                        mode=meta["mode"],
-                        model=meta["model"],
-                        prompt_version=meta["promptVersion"],
-                        cached=False,
-                        status="error",
-                        provider=AI_EXPLAIN_PROVIDER,
-                        error_message=str(exc),
-                    )
+                self.repository.record_usage(
+                    user_id=usage_actor_key,
+                    cache_key=meta["cacheKey"],
+                    sentence_hash=meta["sentenceHash"],
+                    context_hash=meta["contextHash"],
+                    mode=meta["mode"],
+                    model=meta["model"],
+                    prompt_version=meta["promptVersion"],
+                    cached=False,
+                    status="error",
+                    provider=AI_EXPLAIN_PROVIDER,
+                    error_message=str(exc),
+                )
                 raise
 
             self.repository.set_cached(
@@ -299,25 +340,18 @@ class AIExplainService:
                 provider=provider,
                 response=structured,
             )
-            if reservation_token:
-                self.repository.finalize_reservation(
-                    reservation_token=reservation_token,
-                    provider=provider,
-                    status="ok",
-                )
-            else:
-                self.repository.record_usage(
-                    user_id=user_id,
-                    cache_key=meta["cacheKey"],
-                    sentence_hash=meta["sentenceHash"],
-                    context_hash=meta["contextHash"],
-                    mode=meta["mode"],
-                    model=meta["model"],
-                    prompt_version=meta["promptVersion"],
-                    cached=False,
-                    status="ok",
-                    provider=provider,
-                )
+            self.repository.record_usage(
+                user_id=usage_actor_key,
+                cache_key=meta["cacheKey"],
+                sentence_hash=meta["sentenceHash"],
+                context_hash=meta["contextHash"],
+                mode=meta["mode"],
+                model=meta["model"],
+                prompt_version=meta["promptVersion"],
+                cached=False,
+                status="ok",
+                provider=provider,
+            )
             payload = {
                 "sentence": normalized_sentence,
                 "contextHash": meta["contextHash"],
@@ -371,11 +405,15 @@ class AIExplainService:
         model: str,
     ) -> tuple[dict, str]:
         if not AI_EXPLAIN_ENABLED:
-            raise RuntimeError("AI explain is disabled.")
-        if AI_EXPLAIN_PROVIDER == "openai" and requests is not None and AI_EXPLAIN_API_KEY:
-            structured = self._openai_explain(sentence=sentence, context=context, mode=mode, model=model)
-            return structured, "openai"
-        return self._mock_explain(sentence), "builtin-mock"
+            raise AIExplainNotConfiguredError("AI explain is disabled.")
+        if AI_EXPLAIN_PROVIDER == "openai" and not AI_EXPLAIN_API_KEY:
+            raise AIExplainNotConfiguredError("AI explain provider is not configured.")
+        if AI_EXPLAIN_PROVIDER != "openai":
+            raise AIExplainNotConfiguredError("AI explain provider is not configured.")
+        if requests is None:
+            raise AIExplainNotConfiguredError("AI runtime is not available.")
+        structured = self._openai_explain(sentence=sentence, context=context, mode=mode, model=model)
+        return structured, "openai"
 
     def _openai_explain(
         self,
@@ -402,35 +440,43 @@ class AIExplainService:
                 {"role": "user", "content": json.dumps(user_content, ensure_ascii=False)},
             ],
         }
-        response = requests.post(
-            endpoint,
-            headers={
-                "Authorization": f"Bearer {AI_EXPLAIN_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            timeout=AI_EXPLAIN_TIMEOUT_SECONDS,
-        )
+        try:
+            response = requests.post(
+                endpoint,
+                headers={
+                    "Authorization": f"Bearer {AI_EXPLAIN_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                timeout=AI_EXPLAIN_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            raise AIExplainProviderError(f"AI provider request failed: {exc}") from exc
         try:
             raw = response.json()
         except Exception as exc:
-            raise RuntimeError(f"AI 服务返回非 JSON：HTTP {response.status_code}") from exc
+            raise AIExplainProviderError(
+                f"AI provider returned non-JSON response: HTTP {response.status_code}"
+            ) from exc
         if not response.ok:
             message = (
                 raw.get("error", {}).get("message")
                 or raw.get("message")
-                or f"AI 服务调用失败：HTTP {response.status_code}"
+                or f"AI provider request failed: HTTP {response.status_code}"
             )
-            raise RuntimeError(str(message))
+            raise AIExplainProviderError(str(message))
         choices = raw.get("choices")
         if not isinstance(choices, list) or not choices:
-            raise RuntimeError("AI 服务未返回解释内容。")
+            raise AIExplainProviderError("AI provider returned empty response.")
         message = choices[0].get("message", {})
         content = str(message.get("content", "") or "").strip()
         if not content:
-            raise RuntimeError("AI 服务返回空解释。")
-        parsed = self._parse_structured_response(content)
-        return self._validate_structured(parsed)
+            raise AIExplainProviderError("AI provider returned empty content.")
+        try:
+            parsed = self._parse_structured_response(content)
+            return self._validate_structured(parsed)
+        except Exception as exc:
+            raise AIExplainProviderError(str(exc)) from exc
 
     @staticmethod
     def _parse_structured_response(content: str) -> dict:

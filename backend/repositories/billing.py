@@ -9,6 +9,7 @@ from backend.config import (
     normalize_optional_pay_channel,
     normalize_pay_channel,
     normalize_plan,
+    normalize_plan_status,
     normalize_subscription_status,
     sanitize_user_id,
 )
@@ -55,7 +56,9 @@ class BillingStore:
                         """
                         INSERT OR REPLACE INTO plans (
                           user_id,
+                          plan_name,
                           plan,
+                          plan_status,
                           updated_at,
                           source,
                           last_paid_channel,
@@ -64,11 +67,13 @@ class BillingStore:
                           subscription_status,
                           stripe_customer_id,
                           stripe_subscription_id
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             user_key,
+                            record["planName"],
                             record["plan"],
+                            record["planStatus"],
                             record["updatedAt"],
                             record["source"],
                             record["lastPaidChannel"],
@@ -84,9 +89,14 @@ class BillingStore:
     @staticmethod
     def _normalize_record(user_key: str, raw: dict | None) -> dict:
         source = raw if isinstance(raw, dict) else {}
+        normalized_plan = normalize_plan(source.get("planName", source.get("plan")))
         return {
             "userId": user_key,
-            "plan": normalize_plan(source.get("plan")),
+            "planName": normalized_plan,
+            "plan": normalized_plan,
+            "planStatus": normalize_plan_status(
+                source.get("planStatus", "active" if normalized_plan == "pro" else "inactive")
+            ),
             "updatedAt": int(source.get("updatedAt", 0) or 0),
             "source": str(source.get("source", "manual") or "manual"),
             "lastPaidChannel": normalize_optional_pay_channel(source.get("lastPaidChannel")),
@@ -109,7 +119,9 @@ class BillingStore:
                 """
                 SELECT
                   user_id,
+                  plan_name,
                   plan,
+                  plan_status,
                   updated_at,
                   source,
                   last_paid_channel,
@@ -132,6 +144,8 @@ class BillingStore:
             user_key,
             {
                 "plan": row["plan"],
+                "planName": row["plan_name"],
+                "planStatus": row["plan_status"],
                 "updatedAt": row["updated_at"],
                 "source": row["source"],
                 "lastPaidChannel": row["last_paid_channel"],
@@ -151,7 +165,9 @@ class BillingStore:
         return {
             "userId": user_key,
             "plan": plan,
-            "entitlementPlan": record["plan"],
+            "planName": record["planName"],
+            "planStatus": record["planStatus"],
+            "entitlementPlan": record["planName"],
             "features": dict(PLAN_FEATURES[plan]),
             "updatedAt": record["updatedAt"],
             "source": record["source"],
@@ -169,7 +185,8 @@ class BillingStore:
 
     @staticmethod
     def _effective_plan(record: dict) -> tuple[str, str]:
-        entitlement_plan = normalize_plan(record.get("plan"))
+        entitlement_plan = normalize_plan(record.get("planName", record.get("plan")))
+        plan_status = normalize_plan_status(record.get("planStatus", "inactive"))
         now = now_ms()
         plan_expire_at = int(record.get("planExpireAt", 0) or 0)
         grace_until_at = int(record.get("graceUntilAt", 0) or 0)
@@ -177,6 +194,8 @@ class BillingStore:
         subscription_status = normalize_subscription_status(record.get("subscriptionStatus"))
         if entitlement_plan != "pro":
             return entitlement_plan, "free"
+        if plan_status != "active":
+            return "free", "inactive"
         if plan_expire_at > now:
             if billing_state == "grace" or subscription_status in {"past_due", "unpaid", "incomplete"}:
                 return "pro", "grace"
@@ -193,6 +212,7 @@ class BillingStore:
         *,
         last_paid_channel: str = "",
         last_order_id: str = "",
+        plan_status: str | None = None,
         subscription_status: str | None = None,
         plan_expire_at: int | None = None,
         stripe_customer_id: str = "",
@@ -205,8 +225,11 @@ class BillingStore:
         user_key = sanitize_user_id(user_id)
         now = now_ms()
         current = self.get_billing(user_key)
+        normalized_plan = normalize_plan(plan)
         record = {
-            "plan": normalize_plan(plan),
+            "planName": normalized_plan,
+            "plan": normalized_plan,
+            "planStatus": current.get("planStatus", "inactive"),
             "updatedAt": now,
             "source": str(source or "manual"),
             "lastPaidChannel": current["lastPaidChannel"],
@@ -219,6 +242,10 @@ class BillingStore:
             "paymentFailedAt": current.get("paymentFailedAt", 0),
             "billingState": current.get("billingState", ""),
         }
+        if plan_status is not None:
+            record["planStatus"] = normalize_plan_status(plan_status)
+        else:
+            record["planStatus"] = "active" if normalized_plan == "pro" else "inactive"
         if last_paid_channel:
             record["lastPaidChannel"] = normalize_pay_channel(last_paid_channel)
         if last_order_id:
@@ -243,7 +270,9 @@ class BillingStore:
                 """
                 INSERT INTO plans (
                   user_id,
+                  plan_name,
                   plan,
+                  plan_status,
                   updated_at,
                   source,
                   last_paid_channel,
@@ -255,9 +284,11 @@ class BillingStore:
                   grace_until_at,
                   payment_failed_at,
                   billing_state
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
+                  plan_name = excluded.plan_name,
                   plan = excluded.plan,
+                  plan_status = excluded.plan_status,
                   updated_at = excluded.updated_at,
                   source = excluded.source,
                   last_paid_channel = excluded.last_paid_channel,
@@ -272,7 +303,9 @@ class BillingStore:
                 """,
                 (
                     user_key,
+                    record["planName"],
                     record["plan"],
+                    record["planStatus"],
                     record["updatedAt"],
                     record["source"],
                     record["lastPaidChannel"],

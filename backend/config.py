@@ -61,27 +61,28 @@ PLAN_FEATURES = {
         "advancedImport": False,
         "cloudSync": False,
         "csvExportMaxRows": 60,
-        "aiExplainDailyLimit": int(os.getenv("FREE_AI_EXPLAIN_DAILY_LIMIT", "5") or 5),
+        "aiExplainDailyLimit": int(os.getenv("FREE_AI_EXPLAIN_DAILY_LIMIT", "20") or 20),
     },
     PRO_PLAN: {
         "advancedImport": True,
         "cloudSync": True,
         "csvExportMaxRows": 100000,
-        "aiExplainDailyLimit": -1,
+        "aiExplainDailyLimit": int(os.getenv("PRO_AI_EXPLAIN_DAILY_LIMIT", "500") or 500),
     },
 }
 
 APP_BASE_URL = os.getenv("APP_BASE_URL", "").strip()
 BILLING_ALLOW_MANUAL_PLAN_CHANGE = os.getenv("BILLING_ALLOW_MANUAL_PLAN_CHANGE", "0").strip() == "1"
 BILLING_ADMIN_TOKEN = os.getenv("BILLING_ADMIN_TOKEN", "").strip()
-WECHAT_PAY_ENABLED = os.getenv("WECHAT_PAY_ENABLED", "1").strip() != "0"
-ALIPAY_PAY_ENABLED = os.getenv("ALIPAY_PAY_ENABLED", "1").strip() != "0"
+WECHAT_PAY_ENABLED = os.getenv("WECHAT_PAY_ENABLED", "0").strip() == "1"
+ALIPAY_PAY_ENABLED = os.getenv("ALIPAY_PAY_ENABLED", "0").strip() == "1"
 STRIPE_PAY_ENABLED = os.getenv("STRIPE_PAY_ENABLED", "0").strip() == "1"
 WECHAT_PAY_ENTRY_URL = os.getenv("WECHAT_PAY_ENTRY_URL", "").strip()
 ALIPAY_PAY_ENTRY_URL = os.getenv("ALIPAY_PAY_ENTRY_URL", "").strip()
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
 STRIPE_PRICE_ID_MONTHLY = os.getenv("STRIPE_PRICE_ID_MONTHLY", "").strip()
 STRIPE_PRICE_ID_YEARLY = os.getenv("STRIPE_PRICE_ID_YEARLY", "").strip()
+STRIPE_PAYMENT_LINK_MONTHLY = os.getenv("STRIPE_PAYMENT_LINK_MONTHLY", "").strip()
 STRIPE_SUCCESS_URL = os.getenv("STRIPE_SUCCESS_URL", "").strip()
 STRIPE_CANCEL_URL = os.getenv("STRIPE_CANCEL_URL", "").strip()
 STRIPE_PORTAL_RETURN_URL = os.getenv("STRIPE_PORTAL_RETURN_URL", "").strip()
@@ -117,7 +118,7 @@ PRO_PLAN_DAYS = max(1, int(os.getenv("PRO_PLAN_DAYS", "31")))
 ORDER_EXPIRE_MINUTES = max(5, int(os.getenv("PAY_ORDER_EXPIRE_MINUTES", "30")))
 BILLING_GRACE_PERIOD_DAYS = max(1, int(os.getenv("BILLING_GRACE_PERIOD_DAYS", "3") or 3))
 
-AI_EXPLAIN_ENABLED = os.getenv("AI_EXPLAIN_ENABLED", "1").strip() != "0"
+AI_EXPLAIN_ENABLED = os.getenv("AI_EXPLAIN_ENABLED", "0").strip() == "1"
 AI_EXPLAIN_PROVIDER = os.getenv("AI_EXPLAIN_PROVIDER", "openai").strip().lower() or "openai"
 AI_EXPLAIN_API_KEY = os.getenv("AI_EXPLAIN_API_KEY", os.getenv("OPENAI_API_KEY", "")).strip()
 AI_EXPLAIN_MODEL = os.getenv("AI_EXPLAIN_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini")).strip()
@@ -135,7 +136,17 @@ AI_EXPLAIN_ANON_DAILY_LIMIT = max(
     int(
         os.getenv(
             "ANON_AI_EXPLAIN_DAILY_LIMIT",
-            str(max(1, int(PLAN_FEATURES[FREE_PLAN]["aiExplainDailyLimit"] or 1) - 2)),
+            "3",
+        )
+        or 1
+    ),
+)
+AI_EXPLAIN_GUEST_IP_DAILY_LIMIT = max(
+    1,
+    int(
+        os.getenv(
+            "AI_EXPLAIN_GUEST_IP_DAILY_LIMIT",
+            "20",
         )
         or 1
     ),
@@ -160,6 +171,23 @@ AI_EXPLAIN_SINGLEFLIGHT_WAIT_SECONDS = max(
     ),
 )
 AI_EXPLAIN_PROMPT_VERSION = str(os.getenv("AI_EXPLAIN_PROMPT_VERSION", "v2") or "v2").strip()
+ANONYMOUS_ID_COOKIE_NAME = str(
+    os.getenv(
+        "ANONYMOUS_ID_COOKIE_NAME",
+        "anonymous_id",
+    )
+    or "anonymous_id"
+).strip() or "anonymous_id"
+ANONYMOUS_ID_COOKIE_MAX_AGE_SECONDS = max(
+    3600,
+    int(
+        os.getenv(
+            "ANONYMOUS_ID_COOKIE_MAX_AGE_SECONDS",
+            str(365 * 24 * 60 * 60),
+        )
+        or 3600
+    ),
+)
 ANALYSIS_VERSION = str(os.getenv("ANALYSIS_VERSION", "v2") or "v2").strip()
 TOKENIZER_VERSION = str(os.getenv("TOKENIZER_VERSION", "sudachi-split-c-v1") or "sudachi-split-c-v1").strip()
 JLPT_VERSION = str(os.getenv("JLPT_VERSION", "local-jlpt-v1") or "local-jlpt-v1").strip()
@@ -215,6 +243,11 @@ def normalize_plan(value: str | None) -> str:
     return raw if raw in PLAN_FEATURES else FREE_PLAN
 
 
+def normalize_plan_status(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    return "active" if raw == "active" else "inactive"
+
+
 def normalize_pay_channel(value: str | None) -> str:
     raw = str(value or "").strip().lower()
     return raw if raw in PAY_CHANNELS else PAY_CHANNEL_WECHAT
@@ -231,11 +264,54 @@ def normalize_subscription_status(value: str | None) -> str:
     return str(value or "").strip().lower()
 
 
+def payment_enabled() -> bool:
+    return bool(STRIPE_PAY_ENABLED or WECHAT_PAY_ENABLED or ALIPAY_PAY_ENABLED)
+
+
+def stripe_payment_link_enabled() -> bool:
+    if not payment_enabled():
+        return False
+    return bool(STRIPE_PAY_ENABLED and is_abs_http_url(STRIPE_PAYMENT_LINK_MONTHLY))
+
+
+def wechat_runtime_enabled() -> bool:
+    if not payment_enabled():
+        return False
+    return bool(
+        WECHAT_PAY_ENABLED
+        and (
+            WECHAT_PAY_ENTRY_URL
+            or (
+                WECHAT_APP_ID
+                and WECHAT_MCH_ID
+                and WECHAT_MCH_SERIAL
+                and (WECHAT_MCH_PRIVATE_KEY or WECHAT_MCH_PRIVATE_KEY_PATH)
+            )
+        )
+    )
+
+
+def alipay_runtime_enabled() -> bool:
+    if not payment_enabled():
+        return False
+    return bool(
+        ALIPAY_PAY_ENABLED
+        and (
+            ALIPAY_PAY_ENTRY_URL
+            or (
+                ALIPAY_APP_ID
+                and ALIPAY_GATEWAY
+                and (ALIPAY_PRIVATE_KEY or ALIPAY_PRIVATE_KEY_PATH)
+            )
+        )
+    )
+
+
 def payment_channels() -> dict[str, bool]:
     return {
-        PAY_CHANNEL_WECHAT: WECHAT_PAY_ENABLED,
-        PAY_CHANNEL_ALIPAY: ALIPAY_PAY_ENABLED,
-        PAY_CHANNEL_STRIPE: stripe_runtime_enabled(),
+        PAY_CHANNEL_WECHAT: wechat_runtime_enabled(),
+        PAY_CHANNEL_ALIPAY: alipay_runtime_enabled(),
+        PAY_CHANNEL_STRIPE: bool(stripe_payment_link_enabled() or stripe_runtime_enabled()),
     }
 
 
@@ -269,6 +345,8 @@ def stripe_checkout_enabled() -> bool:
 
 
 def stripe_runtime_enabled() -> bool:
+    if not payment_enabled():
+        return False
     try:
         import requests  # type: ignore
     except Exception:

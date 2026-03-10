@@ -1,14 +1,40 @@
 from __future__ import annotations
 
 import secrets
+from datetime import datetime, timezone
 from pathlib import Path
 
+from backend.config import sanitize_user_id
 from backend.repositories.app_db import AppDatabase, json_dumps, json_loads, now_ms
+
+
+ALLOWED_DAILY_SUBJECT_TYPES = {"guest", "user", "guest_ip"}
 
 
 class AIExplainRepository:
     def __init__(self, db_path: Path) -> None:
         self.db = AppDatabase(db_path)
+
+    @staticmethod
+    def today_utc_date() -> str:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    @staticmethod
+    def normalize_daily_subject(subject_type: str, subject_id: str) -> tuple[str, str]:
+        normalized_type = str(subject_type or "").strip().lower()
+        if normalized_type not in ALLOWED_DAILY_SUBJECT_TYPES:
+            normalized_type = "guest"
+        raw_id = str(subject_id or "").strip()
+        if normalized_type == "guest_ip":
+            normalized_id = raw_id.lower()[:120] or "127.0.0.1"
+        else:
+            normalized_id = sanitize_user_id(raw_id)
+        return normalized_type, normalized_id
+
+    @classmethod
+    def usage_actor_key(cls, *, subject_type: str, subject_id: str) -> str:
+        normalized_type, normalized_id = cls.normalize_daily_subject(subject_type, subject_id)
+        return f"{normalized_type}:{normalized_id}"
 
     def get_cached(self, cache_key: str, ttl_seconds: int) -> dict | None:
         conn = self.db.connect()
@@ -294,7 +320,206 @@ class AIExplainRepository:
             "limitedTotal": int(row["limited_total"] or 0) if row else 0,
         }
 
-    def delete_user_data(self, user_id: str) -> None:
-        target = str(user_id or "").strip()
+    def daily_usage_count(self, *, subject_type: str, subject_id: str, usage_date: str = "") -> int:
+        normalized_type, normalized_id = self.normalize_daily_subject(subject_type, subject_id)
+        day = str(usage_date or "").strip() or self.today_utc_date()
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT explain_count
+                FROM ai_explain_daily_usage
+                WHERE subject_type = ? AND subject_id = ? AND usage_date = ?
+                LIMIT 1
+                """,
+                (normalized_type, normalized_id, day),
+            ).fetchone()
+        finally:
+            conn.close()
+        return int(row["explain_count"] or 0) if row else 0
+
+    def reserve_daily_usage(
+        self,
+        *,
+        subject_type: str,
+        subject_id: str,
+        daily_limit: int,
+        usage_date: str = "",
+    ) -> bool:
+        normalized_type, normalized_id = self.normalize_daily_subject(subject_type, subject_id)
+        legacy_subject_key = self.usage_actor_key(
+            subject_type=normalized_type,
+            subject_id=normalized_id,
+        )
+        limit = max(0, int(daily_limit or 0))
+        if limit <= 0:
+            return False
+        day = str(usage_date or "").strip() or self.today_utc_date()
+        now = now_ms()
         with self.db.transaction(immediate=True) as conn:
-            conn.execute("DELETE FROM ai_usage WHERE user_id = ?", (target,))
+            row = conn.execute(
+                """
+                SELECT explain_count
+                FROM ai_explain_daily_usage
+                WHERE subject_type = ? AND subject_id = ? AND usage_date = ?
+                LIMIT 1
+                """,
+                (normalized_type, normalized_id, day),
+            ).fetchone()
+            used = int(row["explain_count"] or 0) if row else 0
+            if used >= limit:
+                return False
+            if row:
+                conn.execute(
+                    """
+                    UPDATE ai_explain_daily_usage
+                    SET explain_count = explain_count + 1,
+                        last_used_at = ?
+                    WHERE subject_type = ? AND subject_id = ? AND usage_date = ?
+                    """,
+                    (now, normalized_type, normalized_id, day),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO ai_explain_daily_usage (
+                      user_id,
+                      date,
+                      subject_type,
+                      subject_id,
+                      usage_date,
+                      explain_count,
+                      last_used_at
+                    ) VALUES (?, ?, ?, ?, ?, 1, ?)
+                    """,
+                    (
+                        legacy_subject_key,
+                        day,
+                        normalized_type,
+                        normalized_id,
+                        day,
+                        now,
+                    ),
+                )
+        return True
+
+    def release_daily_usage(self, *, subject_type: str, subject_id: str, usage_date: str = "") -> None:
+        normalized_type, normalized_id = self.normalize_daily_subject(subject_type, subject_id)
+        day = str(usage_date or "").strip() or self.today_utc_date()
+        with self.db.transaction(immediate=True) as conn:
+            row = conn.execute(
+                """
+                SELECT explain_count
+                FROM ai_explain_daily_usage
+                WHERE subject_type = ? AND subject_id = ? AND usage_date = ?
+                LIMIT 1
+                """,
+                (normalized_type, normalized_id, day),
+            ).fetchone()
+            if not row:
+                return
+            used = int(row["explain_count"] or 0)
+            if used <= 0:
+                return
+            conn.execute(
+                """
+                UPDATE ai_explain_daily_usage
+                SET explain_count = CASE
+                    WHEN explain_count > 0 THEN explain_count - 1
+                    ELSE 0
+                  END,
+                  last_used_at = ?
+                WHERE subject_type = ? AND subject_id = ? AND usage_date = ?
+                """,
+                (now_ms(), normalized_type, normalized_id, day),
+            )
+
+    def list_recent_daily_usage(self, *, limit: int = 200) -> list[dict]:
+        take = max(1, min(1000, int(limit or 200)))
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT
+                  user_id,
+                  date,
+                  subject_type,
+                  subject_id,
+                  usage_date,
+                  explain_count,
+                  last_used_at
+                FROM ai_explain_daily_usage
+                WHERE explain_count > 0
+                ORDER BY last_used_at DESC
+                LIMIT ?
+                """,
+                (take,),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [
+            {
+                "subjectType": str(row["subject_type"] or "").strip() or "user",
+                "subjectId": str(row["subject_id"] or "").strip() or str(row["user_id"] or ""),
+                "usageDate": str(row["usage_date"] or "").strip() or str(row["date"] or ""),
+                "userId": str(row["user_id"] or ""),
+                "date": str(row["date"] or ""),
+                "explainCount": int(row["explain_count"] or 0),
+                "lastUsedAt": int(row["last_used_at"] or 0),
+            }
+            for row in rows
+        ]
+
+    def list_recent_usage_events(self, *, limit: int = 200) -> list[dict]:
+        take = max(1, min(1000, int(limit or 200)))
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT
+                  user_id,
+                  mode,
+                  model,
+                  cached,
+                  status,
+                  provider,
+                  error_message,
+                  created_at
+                FROM ai_usage
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (take,),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [
+            {
+                "userId": str(row["user_id"] or ""),
+                "mode": str(row["mode"] or ""),
+                "model": str(row["model"] or ""),
+                "cached": bool(row["cached"]),
+                "status": str(row["status"] or ""),
+                "provider": str(row["provider"] or ""),
+                "errorMessage": str(row["error_message"] or ""),
+                "createdAt": int(row["created_at"] or 0),
+            }
+            for row in rows
+        ]
+
+    def delete_user_data(self, user_id: str) -> None:
+        target = sanitize_user_id(user_id)
+        prefixed_target = self.usage_actor_key(subject_type="user", subject_id=target)
+        with self.db.transaction(immediate=True) as conn:
+            conn.execute(
+                "DELETE FROM ai_usage WHERE user_id IN (?, ?)",
+                (target, prefixed_target),
+            )
+            conn.execute(
+                """
+                DELETE FROM ai_explain_daily_usage
+                WHERE (subject_type = 'user' AND subject_id = ?)
+                  OR user_id IN (?, ?)
+                """,
+                (target, target, prefixed_target),
+            )

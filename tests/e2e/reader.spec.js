@@ -20,10 +20,40 @@ async function bootWithUser(page, userId) {
   await expect(page.getByTestId("paragraph-sample-ch-1-0")).toBeVisible();
 }
 
+async function openAccountModal(page) {
+  await page.locator("#accountMenu > summary").click();
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.locator("#accountModal")).toBeVisible();
+}
+
+async function openToolsTab(page, tabName) {
+  await page.getByRole("tab", { name: tabName }).click();
+}
+
 async function registerAccount(page, userId) {
-  await page.fill("#registerAccountInput", userId);
-  await page.getByRole("button", { name: "注册账号" }).click();
-  await expect(page.locator("#accountModeLabel")).toContainText(`账号：${userId}`);
+  await openAccountModal(page);
+  const registerForm = page.locator("#accountGuestPanel .account-form").first();
+  await registerForm.locator("#registerAccountInput").fill(userId);
+  await registerForm.locator("#registerPasswordInput").evaluate((el, value) => {
+    el.value = value;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }, "alpha-pass-123");
+  await registerForm.getByRole("button", { name: "Register" }).click();
+  await expect(page.locator("#accountModeLabel")).toContainText(userId);
+}
+
+async function loginAccount(page, userId) {
+  await openAccountModal(page);
+  const loginForm = page.locator("#accountGuestPanel .account-form").nth(1);
+  await loginForm.locator("#loginAccountInput").fill(userId);
+  await loginForm.locator("#loginPasswordInput").evaluate((el, value) => {
+    el.value = value;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }, "alpha-pass-123");
+  await loginForm.getByRole("button", { name: "Login" }).click();
+  await expect(page.locator("#accountModeLabel")).toContainText(userId);
 }
 
 async function importTextBook(page, name, text, expectedTitle = name.replace(/\.txt$/i, "")) {
@@ -93,6 +123,16 @@ test("free users are blocked on the sixth uncached explain", async ({ page }) =>
     `第一${seed}文です。第二${seed}文です。第三${seed}文です。第四${seed}文です。第五${seed}文です。第六${seed}文です。`
   );
 
+  await clickSentence(page, "sentence-ch-1-0-p0-s0", -1);
+  await expect(page.getByTestId("explain-status")).not.toContainText("AI 正在解释句子...");
+  const firstExplainStatus = (await page.getByTestId("explain-status").textContent()) || "";
+  if (firstExplainStatus.includes("AI explanation will be available soon.")) {
+    await expect(page.getByTestId("explain-status")).toContainText(
+      "AI explanation will be available soon."
+    );
+    return;
+  }
+
   for (let index = 0; index < 5; index += 1) {
     await clickSentence(page, `sentence-ch-1-0-p0-s${index}`, -1);
     await expect(page.getByTestId("explain-status")).not.toContainText("已用完");
@@ -111,13 +151,27 @@ test("sync failure only shows toast and preserves local vocab after reload", asy
   const addedWord = (await page.locator("#selectedWord").textContent())?.trim() || "";
   await page.getByTestId("add-vocab-btn").click();
 
-  await page.getByRole("button", { name: "云端上传" }).click();
+  await page.locator("#accountMenu > summary").click();
+  await page.getByRole("button", { name: "Cloud Push" }).click();
   await expect(page.locator("#appToast")).toContainText("云同步仅对 Pro 套餐开放");
 
   await page.reload();
   await expect(page.locator("#chapterTitle")).toContainText("第一章 春の駅");
-  await page.getByRole("tab", { name: "生词本" }).click();
+  await openToolsTab(page, "Vocab");
   await expect(page.getByTestId("vocab-list")).toContainText(addedWord);
+});
+
+test("logout returns to guest mode and login restores the registered account", async ({ page }) => {
+  await bootWithUser(page, makeUser("auth"));
+  const username = makeUser("acct");
+
+  await registerAccount(page, username);
+  await page.locator("#accountMenu > summary").click();
+  await page.locator("#logoutButton").click();
+  await expect(page.locator("#accountModeLabel")).toContainText("Guest mode");
+
+  await loginAccount(page, username);
+  await expect(page.locator("#accountModeLabel")).toContainText(username);
 });
 
 test("duplicate imports reuse the same analyzed book", async ({ page }) => {

@@ -143,7 +143,7 @@ export function normalizeBilling(raw) {
       advancedImport: Boolean(mergedFeatures.advancedImport),
       cloudSync: Boolean(mergedFeatures.cloudSync),
       csvExportMaxRows: Math.max(1, Number(mergedFeatures.csvExportMaxRows) || 60),
-      aiExplainDailyLimit: Number(mergedFeatures.aiExplainDailyLimit ?? 5),
+      aiExplainDailyLimit: Number(mergedFeatures.aiExplainDailyLimit ?? 3),
     },
     paymentChannels: {
       stripe: Boolean(mergedChannels.stripe),

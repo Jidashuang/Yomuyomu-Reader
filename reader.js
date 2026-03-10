@@ -42,6 +42,7 @@ export function initApp() {
   });
   checkApiHealth().then(() => {
     void (async () => {
+      await refreshPaymentOptions(true);
       await refreshBillingPlan(true);
       await bootstrapBookExperience();
     })();
@@ -55,29 +56,91 @@ export function initApp() {
   initTtsVoices();
 }
 
+const REGISTER_USERNAME_RE = /^[a-z0-9_-]{3,32}$/;
+const REGISTER_BUTTON_LABEL = "Register";
+const REGISTER_LOADING_LABEL = "Registering...";
+const REGISTER_ERROR_MESSAGES = {
+  INVALID_USERNAME: "Invalid username. Use lowercase letters, numbers, _ or -",
+  WEAK_PASSWORD: "Password must be at least 8 characters.",
+  USERNAME_EXISTS: "Username already exists.",
+};
+const LOGIN_BUTTON_LABEL = "Login";
+const LOGIN_LOADING_LABEL = "Logging in...";
+const LOGIN_ERROR_MESSAGES = {
+  INVALID_CREDENTIALS: "Invalid username or password.",
+};
+const RIGHT_PANEL_TABS = ["vocab", "notes", "more"];
+
 function createAnonymousId() {
-  return `guest_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const randomPart =
+    typeof globalThis.crypto?.randomUUID === "function"
+      ? globalThis.crypto.randomUUID().slice(0, 8)
+      : Math.random().toString(36).slice(2, 10);
+  return `guest_${randomPart}`;
+}
+
+function isRegisteredAccount() {
+  return (
+    state.sync.accountMode === "registered" &&
+    Boolean(sanitizeSyncUserId(state.sync.userId)) &&
+    Boolean(String(state.sync.accountToken || "").trim())
+  );
+}
+
+function readLegacyAccountStorage() {
+  return {
+    userId: sanitizeSyncUserId(localStorage.getItem("userId") || ""),
+    accountToken: String(localStorage.getItem("accountToken") || "").trim(),
+  };
+}
+
+function syncLegacyAccountStorage() {
+  if (isRegisteredAccount()) {
+    localStorage.setItem("userId", state.sync.userId);
+    if (state.sync.accountToken) {
+      localStorage.setItem("accountToken", state.sync.accountToken);
+    } else {
+      localStorage.removeItem("accountToken");
+    }
+    return;
+  }
+  const guestId = sanitizeSyncUserId(state.sync.anonymousId || state.sync.userId) || createAnonymousId();
+  localStorage.setItem("userId", guestId);
+  localStorage.removeItem("accountToken");
+}
+
+function persistSyncState() {
+  saveJSON(STORAGE_KEYS.sync, state.sync);
+  syncLegacyAccountStorage();
+}
+
+function currentAccountName() {
+  return sanitizeSyncUserId(state.sync.userId) || "";
 }
 
 function ensureSessionIdentity() {
-  const registeredUserId = sanitizeSyncUserId(state.sync.userId);
+  const legacyAccount = readLegacyAccountStorage();
+  const registeredUserId = sanitizeSyncUserId(state.sync.userId || legacyAccount.userId);
+  const registeredToken = String(state.sync.accountToken || legacyAccount.accountToken || "").trim();
   const hasRegisteredSession =
-    state.sync.accountMode === "registered" &&
+    (state.sync.accountMode === "registered" || Boolean(registeredToken)) &&
     Boolean(registeredUserId) &&
-    Boolean(String(state.sync.accountToken || "").trim());
+    Boolean(registeredToken);
   if (hasRegisteredSession) {
     state.sync = {
       ...DEFAULT_SYNC,
       ...state.sync,
       userId: registeredUserId,
       accountMode: "registered",
+      accountToken: registeredToken,
       anonymousId: "",
     };
-    saveJSON(STORAGE_KEYS.sync, state.sync);
+    persistSyncState();
     return;
   }
   const anonymousId =
-    sanitizeSyncUserId(state.sync.anonymousId || state.sync.userId) || createAnonymousId();
+    sanitizeSyncUserId(state.sync.anonymousId || legacyAccount.userId || state.sync.userId) ||
+    createAnonymousId();
   state.sync = {
     ...DEFAULT_SYNC,
     ...state.sync,
@@ -87,7 +150,66 @@ function ensureSessionIdentity() {
     accountToken: "",
     registeredAt: 0,
   };
-  saveJSON(STORAGE_KEYS.sync, state.sync);
+  persistSyncState();
+  if (state.book && !state.book.sampleSlug) {
+    state.book = null;
+    state.currentChapter = 0;
+    syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
+    clearPersistedBookState();
+  }
+}
+
+function isAccountModalOpen() {
+  return Boolean(els.accountModal && !els.accountModal.hidden);
+}
+
+function closeAccountMenu() {
+  if (els.accountMenu) {
+    els.accountMenu.open = false;
+  }
+}
+
+function openAccountModal(options = {}) {
+  if (!els.accountModal || isAccountModalOpen()) return;
+  els.accountModal.hidden = false;
+  document.body.classList.add("modal-open");
+  const preferredPanel = String(options.panel || "").trim().toLowerCase();
+  const focusTarget = isRegisteredAccount()
+    ? els.accountLogoutButton
+    : preferredPanel === "register"
+    ? els.registerAccountInput || els.registerPasswordInput
+    : els.loginAccountInput || els.registerAccountInput;
+  requestAnimationFrame(() => {
+    focusTarget?.focus?.();
+  });
+}
+
+function closeAccountModal() {
+  if (!els.accountModal || !isAccountModalOpen()) return;
+  els.accountModal.hidden = true;
+  document.body.classList.remove("modal-open");
+}
+
+function initMoreAccordion() {
+  const sections = Array.from(document.querySelectorAll(".more-section"));
+  sections.forEach((section) => {
+    section.addEventListener("toggle", () => {
+      if (!section.open) return;
+      sections.forEach((other) => {
+        if (other !== section) {
+          other.open = false;
+        }
+      });
+    });
+  });
+}
+
+function openToolsSection() {
+  setRightPanelTab("vocab");
+}
+
+function readerScrollContainer() {
+  return els.readerViewport || els.readerContent;
 }
 
 function bindEvents() {
@@ -95,24 +217,65 @@ function bindEvents() {
   els.loadSampleBtn.addEventListener("click", () => {
     void onLoadSampleBook();
   });
-  els.registerAccountBtn?.addEventListener("click", () => {
+  els.registerAccountButton?.addEventListener("click", () => {
     void onRegisterAccount();
   });
+  els.loginButton?.addEventListener("click", () => {
+    void loginAccount();
+  });
+  els.signInButton?.addEventListener("click", () => {
+    closeAccountMenu();
+    openAccountModal({ panel: "login" });
+  });
+  els.registerMenuButton?.addEventListener("click", () => {
+    closeAccountMenu();
+    openAccountModal({ panel: "register" });
+  });
+  els.closeAccountModalBtn?.addEventListener("click", closeAccountModal);
+  els.accountModalBackdrop?.addEventListener("click", closeAccountModal);
+  if (els.logoutButton) {
+    els.logoutButton.onclick = () => {
+      closeAccountMenu();
+      logoutAccount();
+    };
+  }
+  if (els.accountLogoutButton) {
+    els.accountLogoutButton.onclick = logoutAccount;
+  }
 
   els.chapterList.addEventListener("click", onChapterListClick);
   els.bookmarkList.addEventListener("click", onBookmarkListClick);
+  els.notesBookmarkList?.addEventListener("click", onBookmarkListClick);
   els.noteList.addEventListener("click", onNoteListClick);
   els.addBookmarkBtn.addEventListener("click", onAddBookmark);
   els.prevPageBtn.addEventListener("click", onPrevPage);
   els.nextPageBtn.addEventListener("click", onNextPage);
+  els.scrollModeBtn?.addEventListener("click", () => {
+    setReadingMode("scroll");
+  });
+  els.pagedModeBtn?.addEventListener("click", () => {
+    setReadingMode("paged");
+  });
   els.toggleAutoPageBtn.addEventListener("click", onToggleAutoPage);
   els.toggleFocusBtn.addEventListener("click", onToggleFocusMode);
+  els.fontDecreaseBtn?.addEventListener("click", () => {
+    adjustFontSize(-1);
+  });
+  els.fontIncreaseBtn?.addEventListener("click", () => {
+    adjustFontSize(1);
+  });
+  els.lineHeightDecreaseBtn?.addEventListener("click", () => {
+    adjustLineHeight(-0.1);
+  });
+  els.lineHeightIncreaseBtn?.addEventListener("click", () => {
+    adjustLineHeight(0.1);
+  });
 
   els.readerContent.addEventListener("mouseup", onReaderMouseUp);
   els.readerContent.addEventListener("touchend", onReaderTouchEnd, { passive: true });
   els.readerContent.addEventListener("click", onReaderClick);
   document.addEventListener("mouseup", onReaderMouseUp);
-  els.readerContent.addEventListener("scroll", onReaderScroll);
+  readerScrollContainer().addEventListener("scroll", onReaderScroll);
   els.addWordBtn.addEventListener("click", onAddWord);
   els.addNoteBtn.addEventListener("click", onAddNoteClick);
   els.dictLink.addEventListener("click", onDictLinkClick);
@@ -139,10 +302,10 @@ function bindEvents() {
     void onDeleteAccount();
   });
   els.vocabList.addEventListener("click", onVocabAction);
-  els.rightTabs.addEventListener("click", onRightTabsClick);
+  els.rightTabs?.addEventListener("click", onRightTabsClick);
 
-  els.fontSizeRange.addEventListener("input", onSettingsChange);
-  els.lineHeightRange.addEventListener("input", onSettingsChange);
+  els.fontSizeRange?.addEventListener("input", onSettingsChange);
+  els.lineHeightRange?.addEventListener("input", onSettingsChange);
   els.difficultyModeSelect.addEventListener("change", onSettingsChange);
   els.mojiSchemeSelect.addEventListener("change", onSettingsChange);
   els.readerFontSelect.addEventListener("change", onSettingsChange);
@@ -153,8 +316,14 @@ function bindEvents() {
   els.ttsStopBtn.addEventListener("click", onStopTts);
 
   els.userIdInput.addEventListener("change", onSyncUserChange);
-  els.pullSyncBtn.addEventListener("click", onSyncPull);
-  els.pushSyncBtn.addEventListener("click", onSyncPush);
+  els.pullSyncBtn?.addEventListener("click", () => {
+    closeAccountMenu();
+    void onSyncPull();
+  });
+  els.pushSyncBtn?.addEventListener("click", () => {
+    closeAccountMenu();
+    void onSyncPush();
+  });
   els.reportIssueBtn?.addEventListener("click", () => {
     void openFeedbackPrompt("bug");
   });
@@ -165,6 +334,20 @@ function bindEvents() {
   els.billingIntervalSelect.addEventListener("change", onBillingIntervalChange);
   els.upgradeProBtn.addEventListener("click", onUpgradeProPlan);
   els.manageBillingBtn.addEventListener("click", onOpenBillingPortal);
+  els.joinWaitlistBtn?.addEventListener("click", () => {
+    showToast("Pro is not available yet.");
+  });
+
+  document.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (els.accountMenu?.open && !target?.closest("#accountMenu")) {
+      els.accountMenu.open = false;
+    }
+    const settingsPopover = document.getElementById("readerSettingsPopover");
+    if (settingsPopover?.open && !target?.closest("#readerSettingsPopover")) {
+      settingsPopover.open = false;
+    }
+  });
 
   window.addEventListener("beforeunload", () => {
     persistAll();
@@ -173,6 +356,8 @@ function bindEvents() {
   });
 
   window.addEventListener("keydown", onReaderHotkey);
+
+  initMoreAccordion();
 }
 
 function renderAll() {
@@ -195,7 +380,9 @@ function hydrateBook() {
   if (!state.book || !Array.isArray(state.book.chapters)) return;
   state.book = normalizeBook(state.book);
   state.currentChapter = clampChapterIndex(state.currentChapter);
+  state.scrollBaseChapter = state.currentChapter;
   state.renderedChapterCount = initialRenderedChapterCount();
+  syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
 }
 
 function normalizeBook(rawBook) {
@@ -241,6 +428,7 @@ function normalizeBook(rawBook) {
     id: String(rawBook.id || ""),
     userId: String(rawBook.userId || ""),
     title: String(rawBook.title || "Untitled"),
+    author: String(rawBook.author || rawBook.meta?.author || rawBook.metadata?.author || ""),
     format: String(rawBook.format || "txt"),
     chapterCount: Number(rawBook.chapterCount || chapters.length || 0),
     normalizedVersion: Number(rawBook.normalizedVersion || 1),
@@ -290,7 +478,7 @@ function mergeChapterPayload(chapterPayload) {
     ),
   });
   state.book = normalized;
-  saveJSON(STORAGE_KEYS.book, state.book);
+  persistBookState();
   return state.book.chapters[index];
 }
 
@@ -404,6 +592,14 @@ async function bootstrapBookExperience() {
       await ensureChapterLoaded(state.currentChapter, { prefetch: false });
       renderAll();
       void prefetchNextChapter(state.currentChapter);
+      if (normalizeReadingMode(state.settings.readingMode) === "scroll") {
+        const nextIndex = clampChapterIndex(state.currentChapter + 1);
+        if (nextIndex !== state.currentChapter) {
+          void ensureChapterLoaded(nextIndex, { prefetch: true }).then(() => {
+            renderReader({ preserveScroll: true });
+          });
+        }
+      }
     } catch {
       // Keep local snapshot if refresh fails.
     }
@@ -452,22 +648,11 @@ function sampleBookToImportFile() {
 async function importBookFile(file, options = {}) {
   const ext = file.name.split(".").pop().toLowerCase();
   const isTxt = ext === "txt";
+  const isGuest = state.sync.accountMode !== "registered";
   setStatus(`正在导入 ${file.name} ...`);
-
-  if (state.sync.accountMode !== "registered") {
-    setStatus("游客模式仅开放 sample 阅读和少量 explain，请先注册账号。", true);
-    return;
-  }
 
   if (!isTxt && !state.apiOnline) {
     await checkApiHealth();
-  }
-  if (!isTxt && state.apiOnline && !hasFeature("advancedImport")) {
-    await refreshBillingPlan(true);
-    if (!hasFeature("advancedImport")) {
-      setStatus("EPUB/PDF/MOBI 导入仅对 Pro 套餐开放。", true);
-      return;
-    }
   }
 
   if (state.apiOnline) {
@@ -487,9 +672,15 @@ async function importBookFile(file, options = {}) {
       await setBook(normalizeBook(importedBook), {
         chapterIndex: Number(importedBook.progress?.chapterIndex) || 0,
         syncProgress: false,
+        persistLocal: !isGuest,
       });
       setStatus(
-        String(options.successMessage || `已导入 ${file.name}，共 ${state.book.chapters.length} 章。`)
+        String(
+          options.successMessage ||
+            (isGuest
+              ? `已导入 ${file.name}（游客会话内可读，刷新后可能消失）。`
+              : `已导入 ${file.name}，共 ${state.book.chapters.length} 章。`)
+        )
       );
       return;
     } catch (error) {
@@ -507,8 +698,8 @@ async function importBookFile(file, options = {}) {
       format: "txt",
       chapters: [{ title: "正文", text }],
     });
-    await setBook(book, { syncProgress: false });
-    setStatus("已按 TXT 方式导入。");
+    await setBook(book, { syncProgress: false, persistLocal: !isGuest });
+    setStatus(isGuest ? "已按 TXT 方式导入（游客会话内可读）。" : "已按 TXT 方式导入。");
     return;
   }
 
@@ -550,7 +741,9 @@ async function setBook(book, options = {}) {
       ? Number(options.chapterIndex)
       : Number(state.book?.progress?.chapterIndex) || 0;
   state.currentChapter = clampChapterIndex(initialChapter);
+  state.scrollBaseChapter = state.currentChapter;
   state.renderedChapterCount = initialRenderedChapterCount();
+  syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
   state.selected = null;
   state.selectedSentence = null;
   state.explain = {
@@ -573,16 +766,23 @@ async function setBook(book, options = {}) {
   state.hardWordsByChapter = new Map();
   state.bookFrequencyStats = null;
   state.analysisReady = false;
-  saveJSON(STORAGE_KEYS.book, state.book);
-  saveJSON(STORAGE_KEYS.currentChapter, state.currentChapter);
+  persistBookState({ persistLocal: options.persistLocal });
   renderAll();
-  els.readerContent.scrollTop = 0;
+  readerScrollContainer().scrollTop = 0;
   requestAnalyze(true);
   if (state.apiOnline && state.book?.id) {
     try {
       await ensureChapterLoaded(state.currentChapter, { prefetch: false });
       renderAll();
       void prefetchNextChapter(state.currentChapter);
+      if (normalizeReadingMode(state.settings.readingMode) === "scroll") {
+        const nextIndex = clampChapterIndex(state.currentChapter + 1);
+        if (nextIndex !== state.currentChapter) {
+          void ensureChapterLoaded(nextIndex, { prefetch: true }).then(() => {
+            renderReader({ preserveScroll: true });
+          });
+        }
+      }
       if (options.syncProgress !== false) {
         void syncReadingProgress();
       }
@@ -593,16 +793,32 @@ async function setBook(book, options = {}) {
 }
 
 function initialRenderedChapterCount() {
-  return state.book?.chapters?.length ? 1 : 0;
+  if (!state.book?.chapters?.length) return 0;
+  return normalizeReadingMode(state.settings.readingMode) === "scroll" ? 2 : 1;
 }
 
 function ensureRenderedThrough(chapterIndex) {
+  if (normalizeReadingMode(state.settings.readingMode) !== "scroll") return true;
+  const base = clampChapterIndex(state.scrollBaseChapter);
+  if (chapterIndex < base) {
+    state.scrollBaseChapter = chapterIndex;
+    state.renderedChapterCount = initialRenderedChapterCount();
+    return true;
+  }
+  const needed = chapterIndex - base + 1;
+  if (needed > state.renderedChapterCount) {
+    state.renderedChapterCount = needed;
+  }
   return true;
 }
 
 function renderBookMeta() {
   if (!state.book || !state.book.chapters.length) {
     els.bookTitle.textContent = "未导入书籍";
+    if (els.bookAuthor) {
+      els.bookAuthor.hidden = true;
+      els.bookAuthor.textContent = "作者: -";
+    }
     els.bookMeta.textContent = "格式: -";
     els.chapterCount.textContent = "章节: 0";
     els.chapterTitle.textContent = "阅读区";
@@ -611,11 +827,12 @@ function renderBookMeta() {
   }
   const chapter = currentChapterData();
   els.bookTitle.textContent = state.book.title;
-  const stats = state.book.stats || {};
-  const totalTokens = Number(stats.totalTokens || 0);
-  els.bookMeta.textContent = `格式: ${state.book.format.toUpperCase()}${
-    totalTokens ? ` · 词数 ${totalTokens}` : ""
-  }`;
+  const author = String(state.book.author || "").trim();
+  if (els.bookAuthor) {
+    els.bookAuthor.hidden = !author;
+    els.bookAuthor.textContent = `作者: ${author || "-"}`;
+  }
+  els.bookMeta.textContent = `格式: ${state.book.format.toUpperCase()}`;
   els.chapterCount.textContent = `章节: ${state.book.chapters.length}`;
   els.chapterTitle.textContent = chapter.title;
   els.chapterProgress.textContent = `章节 ${state.currentChapter + 1} / ${
@@ -650,53 +867,107 @@ function onChapterListClick(event) {
 
 async function setCurrentChapter(index) {
   state.currentChapter = clampChapterIndex(index);
+  if (normalizeReadingMode(state.settings.readingMode) === "scroll") {
+    state.scrollBaseChapter = state.currentChapter;
+    state.renderedChapterCount = initialRenderedChapterCount();
+  } else {
+    state.renderedChapterCount = 1;
+  }
+  syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
   ensureRenderedThrough(state.currentChapter);
-  saveJSON(STORAGE_KEYS.currentChapter, state.currentChapter);
-  renderBookMeta();
-  renderChapterList();
+  updateChapterHeader();
+  updateTocHighlight();
+  persistCurrentChapterState();
   renderReader({ preserveScroll: false });
   renderHardWords();
   scheduleDifficultyPaint();
-  scrollToChapter(state.currentChapter, true);
+  if (isPagedMode()) {
+    renderCurrentPage();
+  } else {
+    scrollToChapter(state.currentChapter, true);
+  }
   try {
     await ensureChapterLoaded(state.currentChapter, { prefetch: false });
     renderAll();
+    if (isPagedMode()) {
+      syncReaderState({ currentPageIndex: 0 });
+      renderCurrentPage();
+    }
     void prefetchNextChapter(state.currentChapter);
-    void syncReadingProgress();
+    if (!isPagedMode()) {
+      const nextIndex = clampChapterIndex(state.currentChapter + 1);
+      if (nextIndex !== state.currentChapter) {
+        void ensureChapterLoaded(nextIndex, { prefetch: true }).then(() => {
+          renderReader({ preserveScroll: true });
+        });
+      }
+    }
+    updateReaderProgress();
   } catch (error) {
     setStatus(`章节加载失败：${error.message}`, true);
   }
 }
 
 function scrollToChapter(index, smooth = false) {
-  void index;
-  els.readerContent.scrollTo({
+  const chapterIndex = clampChapterIndex(index);
+  const scrollContainer = readerScrollContainer();
+  if (normalizeReadingMode(state.settings.readingMode) === "scroll") {
+    const block = els.readerContent.querySelector(`.chapter-block[data-chapter="${chapterIndex}"]`);
+    if (block) {
+      scrollContainer.scrollTo({
+        top: Math.max(0, block.offsetTop - 6),
+        behavior: smooth ? "smooth" : "auto",
+      });
+      return;
+    }
+  }
+  scrollContainer.scrollTo({
     top: 0,
     behavior: smooth ? "smooth" : "auto",
   });
 }
 
-function renderReader(options = {}) {
-  const preserveScroll = options.preserveScroll !== false;
-  const prevScrollTop = els.readerContent.scrollTop;
-  els.readerContent.textContent = "";
-  if (!state.book || !state.book.chapters.length) {
-    const p = document.createElement("p");
-    p.className = "empty-tip";
-    p.textContent = "先导入书籍，开始阅读。";
-    els.readerContent.appendChild(p);
-    return;
+function chapterIndexesForRender() {
+  if (!state.book || !state.book.chapters.length) return [];
+  const mode = normalizeReadingMode(state.settings.readingMode);
+  if (mode === "paged") {
+    return [clampChapterIndex(state.currentChapter)];
   }
-  const chapterIndex = clampChapterIndex(state.currentChapter);
-  const chapter = state.book.chapters[chapterIndex];
-  if (!chapterIsLoaded(chapter)) {
-    const p = document.createElement("p");
-    p.className = "empty-tip";
-    p.textContent = `正在加载 ${chapter.title} ...`;
-    els.readerContent.appendChild(p);
-    return;
+  const base = clampChapterIndex(state.scrollBaseChapter);
+  state.scrollBaseChapter = base;
+  const maxCount = Math.max(1, state.book.chapters.length - base);
+  const fallbackCount = initialRenderedChapterCount();
+  state.renderedChapterCount = clampNumber(
+    Number(state.renderedChapterCount) || fallbackCount,
+    1,
+    maxCount
+  );
+  const indexes = [];
+  for (let offset = 0; offset < state.renderedChapterCount; offset += 1) {
+    indexes.push(base + offset);
   }
+  return indexes;
+}
 
+function renderLoadingChapterBlock(chapter, chapterIndex) {
+  const block = document.createElement("section");
+  block.className = "chapter-block loading";
+  block.dataset.chapter = String(chapterIndex);
+  block.dataset.chapterId = chapter.id;
+
+  const heading = document.createElement("h3");
+  heading.className = "chapter-heading";
+  heading.textContent = `${chapterIndex + 1}. ${chapter.title}`;
+  block.appendChild(heading);
+
+  const p = document.createElement("p");
+  p.className = "empty-tip";
+  p.textContent = `正在加载 ${chapter.title} ...`;
+  block.appendChild(p);
+  return block;
+}
+
+function renderChapterBlock(chapter, chapterIndex) {
   const block = document.createElement("section");
   block.className = "chapter-block";
   block.dataset.chapter = String(chapterIndex);
@@ -776,39 +1047,228 @@ function renderReader(options = {}) {
     }
     block.appendChild(para);
   });
-  els.readerContent.appendChild(block);
+
+  return block;
+}
+
+function renderReader(options = {}) {
+  const preserveScroll = options.preserveScroll !== false;
+  const scrollContainer = readerScrollContainer();
+  const prevScrollTop = scrollContainer.scrollTop;
+  els.readerContent.textContent = "";
+  if (!state.book || !state.book.chapters.length) {
+    const p = document.createElement("p");
+    p.className = "empty-tip";
+    p.textContent = "先导入书籍，开始阅读。";
+    els.readerContent.appendChild(p);
+    return;
+  }
+  const chapterIndexes = chapterIndexesForRender();
+  chapterIndexes.forEach((chapterIndex) => {
+    const chapter = state.book.chapters[chapterIndex];
+    if (!chapter) return;
+    if (!chapterIsLoaded(chapter)) {
+      els.readerContent.appendChild(renderLoadingChapterBlock(chapter, chapterIndex));
+      return;
+    }
+    els.readerContent.appendChild(renderChapterBlock(chapter, chapterIndex));
+  });
 
   scheduleDifficultyPaint();
   markSelection();
   if (preserveScroll) {
-    const viewport = els.readerContent.clientHeight;
-    const maxScrollTop = Math.max(0, els.readerContent.scrollHeight - viewport);
-    els.readerContent.scrollTop = clampNumber(prevScrollTop, 0, maxScrollTop);
+    const viewport = scrollContainer.clientHeight;
+    const maxScrollTop = Math.max(0, scrollContainer.scrollHeight - viewport);
+    scrollContainer.scrollTop = clampNumber(prevScrollTop, 0, maxScrollTop);
+  }
+  if (isPagedMode()) {
+    syncPagedPageState();
   }
 }
 
 function onReaderScroll() {
-  state.scrollTicking = false;
+  if (isPagedMode()) {
+    syncPagedPageState();
+    return;
+  }
+  if (state.scrollTicking) return;
+  state.scrollTicking = true;
+  requestAnimationFrame(() => {
+    state.scrollTicking = false;
+    syncCurrentChapterByScroll();
+    maybeLoadMoreChapters();
+  });
+}
+
+function isPagedMode() {
+  return normalizeReadingMode(state.settings.readingMode) === "paged";
+}
+
+function hasNextChapter() {
+  if (!state.book?.chapters?.length) return false;
+  return state.currentChapter < state.book.chapters.length - 1;
+}
+
+function hasPrevChapter() {
+  if (!state.book?.chapters?.length) return false;
+  return state.currentChapter > 0;
+}
+
+function getPagedStep(viewportHeight = readerScrollContainer().clientHeight) {
+  return Math.max(120, Math.floor(Math.max(1, viewportHeight) * 0.92));
+}
+
+function syncReaderState(partial = {}) {
+  state.reader = {
+    ...state.reader,
+    mode: normalizeReadingMode(state.settings.readingMode),
+    currentChapterIndex: clampChapterIndex(state.currentChapter),
+    currentPageIndex: Math.max(0, Number(state.reader?.currentPageIndex) || 0),
+    totalPagesInChapter: Math.max(1, Number(state.reader?.totalPagesInChapter) || 1),
+    ...partial,
+  };
+}
+
+function syncPagedPageState() {
+  if (!state.book?.chapters?.length || !isPagedMode()) {
+    syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
+    return { currentPageIndex: 0, totalPagesInChapter: 1, maxScrollTop: 0, step: 1 };
+  }
+  const scrollContainer = readerScrollContainer();
+  const viewport = Math.max(1, scrollContainer.clientHeight || 1);
+  const step = getPagedStep(viewport);
+  const maxScrollTop = Math.max(0, scrollContainer.scrollHeight - viewport);
+  const totalPagesInChapter = Math.max(1, Math.floor(maxScrollTop / step) + 1);
+  const currentPageIndex = clampNumber(
+    Math.round((scrollContainer.scrollTop || 0) / step),
+    0,
+    totalPagesInChapter - 1
+  );
+  syncReaderState({ currentPageIndex, totalPagesInChapter });
+  return { currentPageIndex, totalPagesInChapter, maxScrollTop, step };
+}
+
+function getCurrentChapterPageCount() {
+  return syncPagedPageState().totalPagesInChapter;
+}
+
+function updateChapterHeader(options = {}) {
+  renderBookMeta();
+  if (options.flash) {
+    flashChapterHeader();
+  }
+}
+
+function updateTocHighlight() {
+  renderChapterList();
+}
+
+function updateReaderProgress(location = {}) {
+  persistCurrentChapterState();
+  void syncReadingProgress(location);
+}
+
+function scrollReaderToTop(smooth = false) {
+  const scrollContainer = readerScrollContainer();
+  if (scrollContainer && scrollContainer !== document.body && scrollContainer !== document.documentElement) {
+    scrollContainer.scrollTo({
+      top: 0,
+      behavior: smooth ? "smooth" : "auto",
+    });
+    return;
+  }
+  els.chapterTitle?.scrollIntoView({
+    behavior: smooth ? "smooth" : "auto",
+    block: "start",
+  });
+}
+
+function flashChapterHeader() {
+  if (!els.chapterTitle) return;
+  els.chapterTitle.classList.remove("chapter-title-flash");
+  void els.chapterTitle.offsetWidth;
+  els.chapterTitle.classList.add("chapter-title-flash");
+  if (state.chapterTitleFlashTimerId) {
+    clearTimeout(state.chapterTitleFlashTimerId);
+  }
+  state.chapterTitleFlashTimerId = setTimeout(() => {
+    els.chapterTitle.classList.remove("chapter-title-flash");
+    state.chapterTitleFlashTimerId = null;
+  }, 680);
+}
+
+async function loadChapterByIndex(index) {
+  if (!state.book?.chapters?.length) return false;
+  const chapterIndex = clampChapterIndex(index);
+  state.currentChapter = chapterIndex;
+  if (isPagedMode()) {
+    state.renderedChapterCount = 1;
+  } else {
+    state.scrollBaseChapter = state.currentChapter;
+    state.renderedChapterCount = initialRenderedChapterCount();
+  }
+  persistCurrentChapterState();
+  ensureRenderedThrough(state.currentChapter);
+  try {
+    await ensureChapterLoaded(state.currentChapter, { prefetch: false });
+  } catch (error) {
+    setStatus(`章节加载失败：${error.message}`, true);
+    return false;
+  }
+  renderReader({ preserveScroll: false });
+  renderHardWords();
+  scheduleDifficultyPaint();
+  syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
+  void prefetchNextChapter(state.currentChapter);
+  return true;
+}
+
+function renderCurrentPage(options = {}) {
+  if (!isPagedMode()) return;
+  const scrollContainer = readerScrollContainer();
+  const viewport = Math.max(1, scrollContainer.clientHeight || 1);
+  const step = getPagedStep(viewport);
+  const maxScrollTop = Math.max(0, scrollContainer.scrollHeight - viewport);
+  const totalPagesInChapter = Math.max(1, Math.floor(maxScrollTop / step) + 1);
+  const currentPageIndex = clampNumber(
+    Number(state.reader?.currentPageIndex) || 0,
+    0,
+    totalPagesInChapter - 1
+  );
+  const targetTop = Math.min(currentPageIndex * step, maxScrollTop);
+  syncReaderState({ currentPageIndex, totalPagesInChapter });
+  scrollContainer.scrollTo({
+    top: targetTop,
+    behavior: options.smooth ? "smooth" : "auto",
+  });
 }
 
 function maybeLoadMoreChapters() {
+  if (normalizeReadingMode(state.settings.readingMode) !== "scroll") return;
   if (!state.book || !state.book.chapters.length) return;
-  if (state.renderedChapterCount >= state.book.chapters.length) return;
-  const viewport = els.readerContent.clientHeight;
-  const maxScrollTop = Math.max(0, els.readerContent.scrollHeight - viewport);
-  const current = els.readerContent.scrollTop;
+  const base = clampChapterIndex(state.scrollBaseChapter);
+  const maxCount = Math.max(1, state.book.chapters.length - base);
+  if (state.renderedChapterCount >= maxCount) return;
+  const scrollContainer = readerScrollContainer();
+  const viewport = scrollContainer.clientHeight;
+  const maxScrollTop = Math.max(0, scrollContainer.scrollHeight - viewport);
+  const current = scrollContainer.scrollTop;
   if (current < maxScrollTop - 200) return;
 
   const before = state.renderedChapterCount;
-  state.renderedChapterCount = Math.min(state.book.chapters.length, before + 2);
+  state.renderedChapterCount = Math.min(maxCount, before + 2);
   if (state.renderedChapterCount !== before) {
     renderReader({ preserveScroll: true });
+    const tailChapterIndex = base + state.renderedChapterCount - 1;
+    void ensureChapterLoaded(tailChapterIndex, { prefetch: true }).then(() => {
+      renderReader({ preserveScroll: true });
+    });
   }
 }
 
 function syncCurrentChapterByScroll() {
   if (!state.book || !state.book.chapters.length) return;
-  const containerRect = els.readerContent.getBoundingClientRect();
+  const containerRect = readerScrollContainer().getBoundingClientRect();
   const blocks = els.readerContent.querySelectorAll(".chapter-block");
   let bestIdx = state.currentChapter;
   let bestDist = Number.POSITIVE_INFINITY;
@@ -826,7 +1286,8 @@ function syncCurrentChapterByScroll() {
 
   if (bestIdx !== state.currentChapter) {
     state.currentChapter = clampChapterIndex(bestIdx);
-    saveJSON(STORAGE_KEYS.currentChapter, state.currentChapter);
+    syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
+    persistCurrentChapterState();
     renderBookMeta();
     renderChapterList();
     renderHardWords();
@@ -835,40 +1296,102 @@ function syncCurrentChapterByScroll() {
 }
 
 function onReaderHotkey(event) {
+  if (event.key === "Escape" && isAccountModalOpen()) {
+    event.preventDefault();
+    closeAccountModal();
+    return;
+  }
   const target = event.target;
   const tag = target && target.tagName ? target.tagName.toLowerCase() : "";
   if (tag === "input" || tag === "textarea" || tag === "select" || target?.isContentEditable) {
     return;
   }
-  if (event.key === "PageDown") {
+  if (!isPagedMode()) return;
+  if (event.key === "PageDown" || event.key === "ArrowRight") {
     event.preventDefault();
     onNextPage();
-  } else if (event.key === "PageUp") {
+  } else if (event.key === "PageUp" || event.key === "ArrowLeft") {
     event.preventDefault();
     onPrevPage();
   }
 }
 
 function onPrevPage() {
-  pageTurnScroll(-1);
+  void goPrevPage();
 }
 
 function onNextPage() {
-  pageTurnScroll(1);
+  void goNextPage();
 }
 
-function pageTurnScroll(direction) {
-  if (!state.book || !state.book.chapters.length) return;
-  const viewport = els.readerContent.clientHeight;
-  const step = Math.max(120, Math.floor(viewport * 0.92));
-  const maxScrollTop = els.readerContent.scrollHeight - viewport;
-  const current = els.readerContent.scrollTop;
-  const target = clampNumber(current + direction * step, 0, maxScrollTop);
-  triggerPageTurn(direction > 0 ? "next" : "prev");
-  els.readerContent.scrollTo({
-    top: target,
-    behavior: "smooth",
-  });
+async function goNextPage() {
+  if (!state.book?.chapters?.length || !isPagedMode()) return false;
+  if (state.pageNavInFlight) return false;
+  state.pageNavInFlight = true;
+  try {
+    const { currentPageIndex, totalPagesInChapter } = syncPagedPageState();
+    const lastPageIndex = Math.max(0, totalPagesInChapter - 1);
+    if (currentPageIndex < lastPageIndex) {
+      syncReaderState({ currentPageIndex: currentPageIndex + 1, totalPagesInChapter });
+      triggerPageTurn("next");
+      renderCurrentPage({ smooth: true });
+      updateReaderProgress();
+      return true;
+    }
+
+    if (!hasNextChapter()) return false;
+    const nextChapterIndex = clampChapterIndex(state.currentChapter + 1);
+    const loaded = await loadChapterByIndex(nextChapterIndex);
+    if (!loaded) return false;
+
+    scrollReaderToTop(false);
+    syncReaderState({ currentPageIndex: 0, totalPagesInChapter: getCurrentChapterPageCount() });
+    triggerPageTurn("next");
+    renderCurrentPage();
+    scrollReaderToTop(true);
+    updateChapterHeader({ flash: true });
+    updateTocHighlight();
+    updateReaderProgress();
+    return true;
+  } finally {
+    state.pageNavInFlight = false;
+  }
+}
+
+async function goPrevPage() {
+  if (!state.book?.chapters?.length || !isPagedMode()) return false;
+  if (state.pageNavInFlight) return false;
+  state.pageNavInFlight = true;
+  try {
+    const { currentPageIndex, totalPagesInChapter } = syncPagedPageState();
+    if (currentPageIndex > 0) {
+      syncReaderState({ currentPageIndex: currentPageIndex - 1, totalPagesInChapter });
+      triggerPageTurn("prev");
+      renderCurrentPage({ smooth: true });
+      updateReaderProgress();
+      return true;
+    }
+
+    if (!hasPrevChapter()) return false;
+    const prevChapterIndex = clampChapterIndex(state.currentChapter - 1);
+    const loaded = await loadChapterByIndex(prevChapterIndex);
+    if (!loaded) return false;
+
+    scrollReaderToTop(false);
+    const totalPages = getCurrentChapterPageCount();
+    syncReaderState({
+      currentPageIndex: Math.max(0, totalPages - 1),
+      totalPagesInChapter: totalPages,
+    });
+    triggerPageTurn("prev");
+    renderCurrentPage();
+    updateChapterHeader({ flash: true });
+    updateTocHighlight();
+    updateReaderProgress();
+    return true;
+  } finally {
+    state.pageNavInFlight = false;
+  }
 }
 
 function triggerPageTurn(direction) {
@@ -886,6 +1409,10 @@ function triggerPageTurn(direction) {
 }
 
 function onToggleAutoPage() {
+  if (normalizeReadingMode(state.settings.readingMode) !== "paged") {
+    setStatus("自动翻页仅在分页模式下可用。");
+    return;
+  }
   if (state.autoPageTimerId) {
     stopAutoPage();
     setStatus("自动翻页已关闭。");
@@ -920,6 +1447,7 @@ function setRightPanelTab(tab, persist = true) {
 
 function renderRightTabs() {
   const activeTab = normalizeRightPanelTab(state.settings.rightPanelTab);
+  if (!els.rightTabs) return;
   const tabButtons = els.rightTabs.querySelectorAll("[data-tab]");
   tabButtons.forEach((button) => {
     const isActive = button.dataset.tab === activeTab;
@@ -938,20 +1466,27 @@ function startAutoPage() {
     setStatus("请先导入书籍后再开启自动翻页。", true);
     return;
   }
+  if (normalizeReadingMode(state.settings.readingMode) !== "paged") {
+    setStatus("自动翻页仅在分页模式下可用。", true);
+    return;
+  }
   stopAutoPage();
   const seconds = clampNumber(Number(state.settings.autoPageSeconds) || 12, 6, 40);
   state.settings.autoPageSeconds = seconds;
   saveJSON(STORAGE_KEYS.settings, state.settings);
   state.autoPageTimerId = setInterval(() => {
-    const viewport = els.readerContent.clientHeight;
-    const maxScrollTop = Math.max(0, els.readerContent.scrollHeight - viewport);
-    const current = els.readerContent.scrollTop;
-    if (current >= maxScrollTop - 4) {
-      stopAutoPage();
-      setStatus("已到末页，自动翻页停止。");
-      return;
-    }
-    pageTurnScroll(1);
+    if (state.autoPageTicking) return;
+    state.autoPageTicking = true;
+    void goNextPage()
+      .then((moved) => {
+        if (!moved) {
+          stopAutoPage();
+          setStatus("已到末页，自动翻页停止。");
+        }
+      })
+      .finally(() => {
+        state.autoPageTicking = false;
+      });
   }, seconds * 1000);
   renderAutoPageUi();
 }
@@ -960,13 +1495,86 @@ function stopAutoPage() {
   if (!state.autoPageTimerId) return;
   clearInterval(state.autoPageTimerId);
   state.autoPageTimerId = null;
+  state.autoPageTicking = false;
   renderAutoPageUi();
 }
 
 function renderAutoPageUi() {
-  const on = Boolean(state.autoPageTimerId);
+  const pagedMode = normalizeReadingMode(state.settings.readingMode) === "paged";
+  const on = pagedMode && Boolean(state.autoPageTimerId);
+  els.toggleAutoPageBtn.hidden = !pagedMode;
+  els.toggleAutoPageBtn.disabled = !pagedMode;
   els.toggleAutoPageBtn.textContent = `自动翻页: ${on ? "开" : "关"}`;
   els.toggleAutoPageBtn.classList.toggle("auto-on", on);
+}
+
+function normalizeReadingMode(value) {
+  return String(value || "").trim() === "paged" ? "paged" : "scroll";
+}
+
+function setReadingMode(mode, options = {}) {
+  const nextMode = normalizeReadingMode(mode);
+  const prevMode = normalizeReadingMode(state.settings.readingMode);
+  if (nextMode === prevMode) {
+    syncReaderState();
+    renderReadingModeUi();
+    renderAutoPageUi();
+    return;
+  }
+  state.settings.readingMode = nextMode;
+  syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
+  if (options.persist !== false) {
+    saveJSON(STORAGE_KEYS.settings, state.settings);
+  }
+  if (nextMode !== "paged") {
+    stopAutoPage();
+  }
+  if (state.book?.chapters?.length) {
+    state.scrollBaseChapter = clampChapterIndex(state.currentChapter);
+    state.renderedChapterCount = nextMode === "scroll" ? initialRenderedChapterCount() : 1;
+    renderReader({ preserveScroll: false });
+    if (nextMode === "paged") {
+      syncReaderState({ currentPageIndex: 0, totalPagesInChapter: getCurrentChapterPageCount() });
+      renderCurrentPage();
+    } else {
+      scrollToChapter(state.currentChapter, false);
+    }
+  }
+  renderReadingModeUi();
+  renderAutoPageUi();
+  if (options.announce !== false) {
+    setStatus(nextMode === "paged" ? "已切换到分页模式。" : "已切换到滚动模式。");
+  }
+}
+
+function renderReadingModeUi() {
+  const mode = normalizeReadingMode(state.settings.readingMode);
+  if (els.scrollModeBtn) {
+    const isScroll = mode === "scroll";
+    els.scrollModeBtn.classList.toggle("active", isScroll);
+    els.scrollModeBtn.setAttribute("aria-pressed", isScroll ? "true" : "false");
+  }
+  if (els.pagedModeBtn) {
+    const isPaged = mode === "paged";
+    els.pagedModeBtn.classList.toggle("active", isPaged);
+    els.pagedModeBtn.setAttribute("aria-pressed", isPaged ? "true" : "false");
+  }
+  if (els.pagedControls) {
+    els.pagedControls.hidden = mode !== "paged";
+  }
+}
+
+function adjustFontSize(delta) {
+  state.settings.fontSize = clampNumber((Number(state.settings.fontSize) || 21) + delta, 16, 32);
+  saveJSON(STORAGE_KEYS.settings, state.settings);
+  applySettings();
+}
+
+function adjustLineHeight(delta) {
+  const next = clampNumber((Number(state.settings.lineHeight) || 1.9) + delta, 1.4, 2.4);
+  state.settings.lineHeight = Math.round(next * 10) / 10;
+  saveJSON(STORAGE_KEYS.settings, state.settings);
+  applySettings();
 }
 
 function requestAnalyze(force = false) {
@@ -1179,7 +1787,6 @@ function inspectWordFromList(word, level = "") {
     example,
     jlpt: level || getJlptLevel(word, word),
   };
-  setRightPanelTab("lookup", false);
   renderLookupPanel();
 
   if (!chapter) return;
@@ -1446,7 +2053,8 @@ async function onReaderClick(event) {
   void syncReadingProgress(state.lastCursor);
   if (state.currentChapter !== chapterIndex) {
     state.currentChapter = chapterIndex;
-    saveJSON(STORAGE_KEYS.currentChapter, state.currentChapter);
+    syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
+    persistCurrentChapterState();
     renderBookMeta();
     renderChapterList();
     renderHardWords();
@@ -1522,7 +2130,8 @@ async function handleReaderSelectionLookup() {
   };
   if (state.currentChapter !== chapterIndex) {
     state.currentChapter = chapterIndex;
-    saveJSON(STORAGE_KEYS.currentChapter, state.currentChapter);
+    syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
+    persistCurrentChapterState();
     renderBookMeta();
     renderChapterList();
     renderHardWords();
@@ -1790,7 +2399,8 @@ async function selectToken(token, chapterId, chapterIndex, paraIndex) {
     end: token.end,
   };
   state.currentChapter = clampChapterIndex(chapterIndex);
-  saveJSON(STORAGE_KEYS.currentChapter, state.currentChapter);
+  syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
+  persistCurrentChapterState();
   renderBookMeta();
   renderChapterList();
   markSelection();
@@ -1809,7 +2419,6 @@ async function selectToken(token, chapterId, chapterIndex, paraIndex) {
   const dict = buildDictionaryView(resolvedToken, entries, contextExample);
   dict.jlpt = getJlptLevel(resolvedToken.surface, resolvedToken.lemma);
   state.selected = dict;
-  setRightPanelTab("lookup", false);
   state.stats.lookupCount += 1;
   saveJSON(STORAGE_KEYS.stats, state.stats);
   renderLookupPanel();
@@ -1984,7 +2593,9 @@ function normalizeReaderFont(value) {
 
 function normalizeRightPanelTab(value) {
   const key = String(value || "").trim();
-  return ["lookup", "vocab", "notes", "stats"].includes(key) ? key : "lookup";
+  if (key === "lookup") return "vocab";
+  if (["stats", "tts", "settings", "data", "billing"].includes(key)) return "more";
+  return RIGHT_PANEL_TABS.includes(key) ? key : "vocab";
 }
 
 function isMacDesktop() {
@@ -2187,14 +2798,23 @@ async function explainSentence(sentence, meta = {}) {
       error: "",
     };
   } catch (error) {
+    const errorCode = String(error?.payload?.code || "").trim().toUpperCase();
+    let friendly = `句子解释失败：${String(error?.message || "").trim() || "未知错误"}`;
+    if (errorCode === "AI_NOT_CONFIGURED") {
+      friendly = "AI explanation is not available yet.";
+    } else if (errorCode === "EXPLAIN_LIMIT_REACHED") {
+      friendly = "You’ve reached today’s AI explanation limit.";
+    } else if (errorCode === "AI_PROVIDER_ERROR") {
+      friendly = "AI explanation failed. Please try again later.";
+    }
     state.explain = {
       loading: false,
       sentenceId: String(sentence.id || ""),
       cached: false,
       result: null,
-      error: `句子解释失败：${error.message}`,
+      error: friendly,
     };
-    showToast(`句子解释失败：${error.message}`, true);
+    showToast(friendly, true);
   }
   renderExplainPanel();
 }
@@ -2252,6 +2872,7 @@ function onAddWord() {
 
 function onAddNoteClick() {
   if (!state.selected) return;
+  openToolsSection();
   setRightPanelTab("notes", false);
   els.noteInput.value = `${state.selected.word}: `;
   els.noteInput.focus();
@@ -2371,34 +2992,37 @@ function onAddBookmark() {
 }
 
 function renderBookmarks() {
-  els.bookmarkList.textContent = "";
-  if (!state.bookmarks.length) {
-    appendListEmpty(els.bookmarkList, "暂无书签");
-    return;
-  }
-  state.bookmarks.slice(0, 80).forEach((item) => {
-    const li = document.createElement("li");
-    li.className = "simple-item";
-    const title = document.createElement("strong");
-    title.textContent = item.excerpt;
-    const meta = document.createElement("p");
-    meta.className = "meta";
-    meta.textContent = `章节 ${Number(item.chapterIndex) + 1}`;
+  const containers = [els.bookmarkList, els.notesBookmarkList].filter(Boolean);
+  containers.forEach((listEl) => {
+    listEl.textContent = "";
+    if (!state.bookmarks.length) {
+      appendListEmpty(listEl, "暂无书签");
+      return;
+    }
+    state.bookmarks.slice(0, 80).forEach((item) => {
+      const li = document.createElement("li");
+      li.className = "simple-item";
+      const title = document.createElement("strong");
+      title.textContent = item.excerpt;
+      const meta = document.createElement("p");
+      meta.className = "meta";
+      meta.textContent = `章节 ${Number(item.chapterIndex) + 1}`;
 
-    const jumpBtn = document.createElement("button");
-    jumpBtn.className = "tiny-btn";
-    jumpBtn.dataset.action = "jump";
-    jumpBtn.dataset.bookmarkId = item.id;
-    jumpBtn.textContent = "跳转";
+      const jumpBtn = document.createElement("button");
+      jumpBtn.className = "tiny-btn";
+      jumpBtn.dataset.action = "jump";
+      jumpBtn.dataset.bookmarkId = item.id;
+      jumpBtn.textContent = "跳转";
 
-    const removeBtn = document.createElement("button");
-    removeBtn.className = "tiny-btn";
-    removeBtn.dataset.action = "remove";
-    removeBtn.dataset.bookmarkId = item.id;
-    removeBtn.textContent = "删除";
+      const removeBtn = document.createElement("button");
+      removeBtn.className = "tiny-btn";
+      removeBtn.dataset.action = "remove";
+      removeBtn.dataset.bookmarkId = item.id;
+      removeBtn.textContent = "删除";
 
-    li.append(title, meta, jumpBtn, removeBtn);
-    els.bookmarkList.appendChild(li);
+      li.append(title, meta, jumpBtn, removeBtn);
+      listEl.appendChild(li);
+    });
   });
 }
 
@@ -2426,9 +3050,10 @@ async function jumpToPosition(chapterId, paraIndex, start, end, word = "", lemma
   const idx = state.book.chapters.findIndex((item) => item.id === chapterId);
   if (idx >= 0) {
     state.currentChapter = idx;
+    syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
     ensureRenderedThrough(idx);
   }
-  saveJSON(STORAGE_KEYS.currentChapter, state.currentChapter);
+  persistCurrentChapterState();
   if (idx >= 0) {
     try {
       await ensureChapterLoaded(idx, { prefetch: false });
@@ -2456,7 +3081,6 @@ async function jumpToPosition(chapterId, paraIndex, start, end, word = "", lemma
     jlpt: state.selected?.jlpt || "",
   };
   markSelection();
-  setRightPanelTab("lookup", false);
   renderLookupPanel();
 
   const para = els.readerContent.querySelector(
@@ -2619,18 +3243,18 @@ function onSettingsChange() {
   const prevDifficultyMode = state.settings.difficultyMode;
   const prevMojiScheme = state.settings.mojiScheme;
   const prevAutoPageSeconds = state.settings.autoPageSeconds;
-  state.settings.fontSize = Number(els.fontSizeRange.value);
-  state.settings.lineHeight = Number(els.lineHeightRange.value);
-  state.settings.readerFont = normalizeReaderFont(els.readerFontSelect.value);
-  state.settings.difficultyMode = String(els.difficultyModeSelect.value || "n1n2n3");
-  state.settings.mojiScheme = normalizeMojiScheme(els.mojiSchemeSelect.value);
+  state.settings.fontSize = Number(els.fontSizeRange?.value || state.settings.fontSize || 21);
+  state.settings.lineHeight = Number(els.lineHeightRange?.value || state.settings.lineHeight || 1.9);
+  state.settings.readerFont = normalizeReaderFont(els.readerFontSelect?.value || state.settings.readerFont);
+  state.settings.difficultyMode = String(els.difficultyModeSelect?.value || "n1n2n3");
+  state.settings.mojiScheme = normalizeMojiScheme(els.mojiSchemeSelect?.value || state.settings.mojiScheme);
   state.settings.autoPageSeconds = clampNumber(
-    Number(els.autoPageSecondsRange.value) || 12,
+    Number(els.autoPageSecondsRange?.value) || 12,
     6,
     40
   );
-  state.settings.ttsRate = Number(els.ttsRateRange.value);
-  state.settings.ttsVoice = els.ttsVoiceSelect.value || "";
+  state.settings.ttsRate = Number(els.ttsRateRange?.value || state.settings.ttsRate || 1);
+  state.settings.ttsVoice = els.ttsVoiceSelect?.value || "";
   saveJSON(STORAGE_KEYS.settings, state.settings);
   applySettings();
 
@@ -2651,31 +3275,58 @@ function applySettings() {
   if (!["n1n2n3", "n1n2", "n1", "off"].includes(state.settings.difficultyMode)) {
     state.settings.difficultyMode = "n1n2n3";
   }
+  state.settings.readingMode = normalizeReadingMode(state.settings.readingMode);
   state.settings.focusMode = Boolean(state.settings.focusMode);
   state.settings.rightPanelTab = normalizeRightPanelTab(state.settings.rightPanelTab);
   state.settings.readerFont = normalizeReaderFont(state.settings.readerFont);
   state.settings.mojiScheme = normalizeMojiScheme(state.settings.mojiScheme);
+  state.settings.fontSize = clampNumber(Number(state.settings.fontSize) || 21, 16, 32);
+  state.settings.lineHeight = clampNumber(Number(state.settings.lineHeight) || 1.9, 1.4, 2.4);
   state.settings.autoPageSeconds = clampNumber(
     Number(state.settings.autoPageSeconds) || 12,
     6,
     40
   );
-  els.fontSizeRange.value = String(state.settings.fontSize);
-  els.lineHeightRange.value = String(state.settings.lineHeight);
-  els.readerFontSelect.value = state.settings.readerFont;
-  els.difficultyModeSelect.value = state.settings.difficultyMode;
-  els.mojiSchemeSelect.value = state.settings.mojiScheme;
-  els.autoPageSecondsRange.value = String(state.settings.autoPageSeconds);
-  els.autoPageSecondsText.textContent = `${state.settings.autoPageSeconds} 秒 / 页`;
-  els.ttsRateRange.value = String(state.settings.ttsRate);
+  syncReaderState();
+  if (els.fontSizeRange) {
+    els.fontSizeRange.value = String(state.settings.fontSize);
+  }
+  if (els.lineHeightRange) {
+    els.lineHeightRange.value = String(state.settings.lineHeight);
+  }
+  if (els.readerFontSelect) {
+    els.readerFontSelect.value = state.settings.readerFont;
+  }
+  if (els.difficultyModeSelect) {
+    els.difficultyModeSelect.value = state.settings.difficultyMode;
+  }
+  if (els.mojiSchemeSelect) {
+    els.mojiSchemeSelect.value = state.settings.mojiScheme;
+  }
+  if (els.autoPageSecondsRange) {
+    els.autoPageSecondsRange.value = String(state.settings.autoPageSeconds);
+  }
+  if (els.autoPageSecondsText) {
+    els.autoPageSecondsText.textContent = `${state.settings.autoPageSeconds} 秒 / 页`;
+  }
+  if (els.ttsRateRange) {
+    els.ttsRateRange.value = String(state.settings.ttsRate);
+  }
   els.readerContent.style.fontSize = `${state.settings.fontSize}px`;
   els.readerContent.style.lineHeight = String(state.settings.lineHeight);
   els.readerContent.style.fontFamily = READER_FONT_MAP[state.settings.readerFont];
   document.body.classList.toggle("focus-mode", state.settings.focusMode);
   els.toggleFocusBtn.textContent = `专注模式: ${state.settings.focusMode ? "开" : "关"}`;
   els.toggleFocusBtn.classList.toggle("auto-on", state.settings.focusMode);
+  renderReadingModeUi();
+  if (state.settings.readingMode !== "paged" && state.autoPageTimerId) {
+    stopAutoPage();
+  }
   renderRightTabs();
   renderAutoPageUi();
+  if (isPagedMode()) {
+    syncPagedPageState();
+  }
 }
 
 function startTimer() {
@@ -2720,7 +3371,7 @@ async function checkApiHealth() {
         state.difficultyPending.clear();
         requestAnalyze(true);
       }
-      renderApiStatus(state.jmdictReady);
+      renderApiStatus();
       if (state.apiOnline && !state.jmdictReady) {
         setStatus("未检测到 jmdict.db：当前词典释义有限。请先构建词典库。", true);
       } else if (state.apiOnline && state.tokenizerBackend === "fallback") {
@@ -2732,7 +3383,7 @@ async function checkApiHealth() {
     } catch {
       state.apiOnline = false;
       state.jmdictReady = false;
-      renderApiStatus(false);
+      renderApiStatus();
     }
   })();
   try {
@@ -2854,30 +3505,17 @@ function enabledPaymentChannelLabels(channels = {}) {
   return labels;
 }
 
-function renderApiStatus(jmdictReady = state.jmdictReady) {
+function renderApiStatus() {
   const plan = normalizePlan(state.billing.plan);
-  const channels = state.billing.paymentChannels || {};
-  const enabledChannels = enabledPaymentChannelLabels(channels);
-  const paymentText = enabledChannels.length ? enabledChannels.join("/") : "未开启";
-  const jlptCount = Object.keys(state.jlptMap).length;
-  const jlptText =
-    hasFullJlptMap()
-      ? `完整词表(${jlptCount})`
-      : state.jlptSource === "file"
-      ? `词表不完整(${jlptCount})`
-      : "未加载";
+  const tokenizerText = state.apiOnline
+    ? state.tokenizerBackend === "fallback"
+      ? "在线(回退分词)"
+      : "在线"
+    : "离线";
   if (state.apiOnline) {
     const chips = [
-      makeStatusChip("API", "在线", "ok"),
+      makeStatusChip("API", tokenizerText, state.tokenizerBackend === "fallback" ? "warn" : "ok"),
       makeStatusChip("套餐", plan.toUpperCase(), plan === "pro" ? "ok" : "warn"),
-      makeStatusChip("支付", paymentText, enabledChannels.length ? "ok" : "warn"),
-      makeStatusChip(
-        "分词",
-        state.tokenizerBackend,
-        state.tokenizerBackend === "fallback" ? "warn" : "ok"
-      ),
-      makeStatusChip("词典", jmdictReady ? "已加载" : "未加载", jmdictReady ? "ok" : "warn"),
-      makeStatusChip("JLPT", jlptText, hasFullJlptMap() ? "ok" : "warn"),
     ];
     els.apiStatus.innerHTML = chips.join("");
     return;
@@ -2885,9 +3523,6 @@ function renderApiStatus(jmdictReady = state.jmdictReady) {
   const offlineChips = [
     makeStatusChip("API", "离线", "bad"),
     makeStatusChip("套餐", plan.toUpperCase(), plan === "pro" ? "ok" : "warn"),
-    makeStatusChip("支付", paymentText, enabledChannels.length ? "ok" : "warn"),
-    makeStatusChip("说明", "TXT/本地回退可用", "normal"),
-    makeStatusChip("JLPT", jlptText, hasFullJlptMap() ? "ok" : "warn"),
   ];
   els.apiStatus.innerHTML = offlineChips.join("");
 }
@@ -2973,6 +3608,10 @@ function normalizeBilling(raw) {
   const stripeSubscriptionId = String(source.stripeSubscriptionId || sourceStripe.subscriptionId || "");
   return {
     userId: sanitizeSyncUserId(source.userId || state.sync?.userId || ""),
+    paymentEnabled:
+      source.paymentEnabled === undefined
+        ? Boolean(DEFAULT_BILLING.paymentEnabled)
+        : Boolean(source.paymentEnabled),
     entitlementPlan: normalizePlan(source.entitlementPlan || source.plan),
     plan: normalizePlan(source.plan),
     source: String(source.source || DEFAULT_BILLING.source),
@@ -2989,7 +3628,7 @@ function normalizeBilling(raw) {
       advancedImport: Boolean(mergedFeatures.advancedImport),
       cloudSync: Boolean(mergedFeatures.cloudSync),
       csvExportMaxRows: Math.max(1, Number(mergedFeatures.csvExportMaxRows) || 60),
-      aiExplainDailyLimit: Number(mergedFeatures.aiExplainDailyLimit ?? 5),
+      aiExplainDailyLimit: Number(mergedFeatures.aiExplainDailyLimit ?? 3),
     },
     paymentChannels: {
       stripe: Boolean(mergedChannels.stripe),
@@ -3005,6 +3644,12 @@ function normalizeBilling(raw) {
         sourceStripe.portalReady === undefined
           ? DEFAULT_BILLING.stripe.portalReady
           : Boolean(sourceStripe.portalReady),
+      paymentLinkReady:
+        sourceStripe.paymentLinkReady === undefined
+          ? DEFAULT_BILLING.stripe.paymentLinkReady
+          : Boolean(sourceStripe.paymentLinkReady),
+      paymentLink: String(sourceStripe.paymentLink || "").trim(),
+      paymentMode: String(sourceStripe.paymentMode || DEFAULT_BILLING.stripe.paymentMode || "none"),
       intervals: {
         monthly: Boolean(mergedStripeIntervals.monthly),
         yearly: Boolean(mergedStripeIntervals.yearly),
@@ -3103,9 +3748,13 @@ function paymentChannelLabel(channel) {
 
 function renderBillingUi() {
   const plan = normalizePlan(state.billing.plan);
-  const accountMode = state.sync.accountMode === "registered" ? "registered" : "guest";
+  const accountMode = isRegisteredAccount() ? "registered" : "guest";
   const isRegistered = accountMode === "registered";
+  const accountName = currentAccountName();
   const stripeConfig = state.billing.stripe || DEFAULT_BILLING.stripe;
+  const stripePaymentLinkReady = Boolean(
+    stripeConfig.paymentLinkReady && String(stripeConfig.paymentLink || "").trim()
+  );
   const statusText = state.billing.subscriptionStatus
     ? `（订阅状态: ${state.billing.subscriptionStatus}）`
     : "";
@@ -3115,36 +3764,122 @@ function renderBillingUi() {
   const cloudSyncEnabled = hasFeature("cloudSync");
   const csvLimit = Math.max(1, Number(state.billing.features?.csvExportMaxRows || 60) || 60);
   const csvUnlimited = plan === "pro" || csvLimit >= 100000;
+  const paymentsEnabled = Boolean(state.billing.paymentEnabled);
   const enabledLabels = enabledPaymentChannelLabels(state.billing.paymentChannels);
   const channelText = enabledLabels.length ? enabledLabels.join(" / ") : "无可用通道";
   if (els.accountModeLabel) {
-    els.accountModeLabel.textContent = isRegistered ? `账号：${state.sync.userId}` : "游客模式";
+    els.accountModeLabel.textContent = isRegistered ? accountName : "Guest mode";
+  }
+  if (els.accountMenu) {
+    if (!isRegistered) {
+      els.accountMenu.open = false;
+    }
+  }
+  if (els.signInButton) {
+    els.signInButton.hidden = isRegistered;
+    els.signInButton.disabled = isRegistered || state.registeringAccount || state.loggingInAccount;
+  }
+  if (els.registerMenuButton) {
+    els.registerMenuButton.hidden = isRegistered;
+    els.registerMenuButton.disabled = isRegistered || state.registeringAccount || state.loggingInAccount;
+  }
+  if (els.usernameDisplay) {
+    els.usernameDisplay.textContent = isRegistered ? accountName : "";
   }
   if (els.userIdInput) {
-    els.userIdInput.value = isRegistered ? state.sync.userId : state.sync.anonymousId || "游客";
+    els.userIdInput.value = isRegistered ? accountName : state.sync.anonymousId || "游客";
     els.userIdInput.disabled = true;
   }
+  if (els.accountGuestPanel) {
+    els.accountGuestPanel.hidden = isRegistered;
+  }
+  if (els.accountRegisteredPanel) {
+    els.accountRegisteredPanel.hidden = !isRegistered;
+  }
+  if (els.accountDisplayName) {
+    els.accountDisplayName.textContent = isRegistered ? accountName : "-";
+  }
+  if (els.accountPlanText) {
+    els.accountPlanText.textContent = plan === "pro" ? "Pro" : "Free";
+  }
+  if (els.logoutButton) {
+    els.logoutButton.hidden = !isRegistered;
+    els.logoutButton.disabled = !isRegistered;
+  }
+  if (els.pullSyncBtn) {
+    els.pullSyncBtn.hidden = !isRegistered;
+  }
+  if (els.pushSyncBtn) {
+    els.pushSyncBtn.hidden = !isRegistered;
+  }
+  if (els.accountLogoutButton) {
+    els.accountLogoutButton.hidden = !isRegistered;
+    els.accountLogoutButton.disabled = !isRegistered;
+  }
   if (els.registerAccountInput) {
-    els.registerAccountInput.hidden = isRegistered;
-    els.registerAccountInput.disabled = isRegistered;
-    if (!isRegistered && !els.registerAccountInput.value) {
+    els.registerAccountInput.disabled = isRegistered || state.registeringAccount || state.loggingInAccount;
+    if (isRegistered) {
       els.registerAccountInput.value = "";
     }
   }
-  if (els.registerAccountBtn) {
-    els.registerAccountBtn.hidden = isRegistered;
-    els.registerAccountBtn.disabled = isRegistered;
+  if (els.registerPasswordInput) {
+    els.registerPasswordInput.disabled = isRegistered || state.registeringAccount || state.loggingInAccount;
+    if (isRegistered) {
+      els.registerPasswordInput.value = "";
+    }
   }
-  els.planLabel.textContent = plan.toUpperCase();
-  els.planLabel.className = `plan-pill ${plan}`;
-  if (!hasAnyPaymentChannel()) {
-    els.planHint.textContent = `支付通道未开启，请配置 Stripe / 微信 / 支付宝。${statusText}${graceText}`;
-  } else {
-    const baseHint =
-      accountMode === "registered"
-        ? `${plan === "pro" ? PRO_FEATURE_HINT : FREE_FEATURE_HINT} 当前价格 ${priceText}，支持 ${channelText}${statusText}${graceText}`
-        : `游客可直接读 sample，并使用少量 AI explain。注册后可升级并同步云端。`;
-    els.planHint.textContent = baseHint;
+  if (els.registerAccountButton) {
+    els.registerAccountButton.disabled = isRegistered || state.registeringAccount || state.loggingInAccount;
+    els.registerAccountButton.textContent = state.registeringAccount
+      ? REGISTER_LOADING_LABEL
+      : REGISTER_BUTTON_LABEL;
+  }
+  if (els.loginAccountInput) {
+    els.loginAccountInput.disabled = isRegistered || state.loggingInAccount || state.registeringAccount;
+    if (isRegistered) {
+      els.loginAccountInput.value = "";
+    }
+  }
+  if (els.loginPasswordInput) {
+    els.loginPasswordInput.disabled = isRegistered || state.loggingInAccount || state.registeringAccount;
+    if (isRegistered) {
+      els.loginPasswordInput.value = "";
+    }
+  }
+  if (els.loginButton) {
+    els.loginButton.disabled = isRegistered || state.loggingInAccount || state.registeringAccount;
+    els.loginButton.textContent = state.loggingInAccount ? LOGIN_LOADING_LABEL : LOGIN_BUTTON_LABEL;
+  }
+  const minimalPlanCard = !paymentsEnabled;
+  if (els.planCard) {
+    els.planCard.classList.toggle("minimal-plan", minimalPlanCard);
+  }
+  if (els.planLiteBlock) {
+    els.planLiteBlock.hidden = !minimalPlanCard;
+  }
+  if (els.planFullBlock) {
+    els.planFullBlock.hidden = minimalPlanCard;
+  }
+  if (els.planLabel) {
+    els.planLabel.textContent = plan.toUpperCase();
+    els.planLabel.className = `plan-pill ${plan}`;
+  }
+  if (els.planComingSoon) {
+    els.planComingSoon.hidden = true;
+    els.planComingSoon.textContent = "Pro is not available yet.";
+  }
+  if (els.planHint) {
+    if (!paymentsEnabled) {
+      els.planHint.textContent = "Pro is not available yet.";
+    } else if (!hasAnyPaymentChannel()) {
+      els.planHint.textContent = `支付通道未开启，请配置 Stripe / 微信 / 支付宝。${statusText}${graceText}`;
+    } else {
+      const baseHint =
+        accountMode === "registered"
+          ? `${plan === "pro" ? PRO_FEATURE_HINT : FREE_FEATURE_HINT} 当前价格 ${priceText}，支持 ${channelText}${statusText}${graceText}`
+          : `游客可直接读 sample，并使用少量 AI explain。注册后可升级并同步云端。`;
+      els.planHint.textContent = baseHint;
+    }
   }
   if (els.benefitAdvancedImport) {
     els.benefitAdvancedImport.textContent = advancedImportEnabled ? "已开通" : "未开通";
@@ -3158,6 +3893,16 @@ function renderBillingUi() {
     els.benefitCsvLimit.textContent = csvUnlimited ? "不限量" : `${csvLimit} 条`;
     els.benefitCsvLimit.className = csvUnlimited ? "enabled" : "disabled";
   }
+  if (els.paymentControls) {
+    els.paymentControls.hidden = !paymentsEnabled;
+  }
+  if (els.paymentDisabledHint) {
+    els.paymentDisabledHint.hidden = true;
+    els.paymentDisabledHint.textContent = "Pro is not available yet.";
+  }
+  if (els.billingFlowHint) {
+    els.billingFlowHint.hidden = !paymentsEnabled;
+  }
   const currentChannel = activePayChannel();
   const preferredInterval = normalizeBillingInterval(
     state.billingOrder.interval || stripeConfig.defaultInterval || "monthly"
@@ -3169,47 +3914,68 @@ function renderBillingUi() {
   if (currentInterval === "monthly" && !monthlyEnabled && yearlyEnabled) currentInterval = "yearly";
   if (!monthlyEnabled && !yearlyEnabled) currentInterval = stripeConfig.defaultInterval || "monthly";
 
-  els.payChannelSelect.value = currentChannel;
-  const stripeOption = els.payChannelSelect.querySelector('option[value="stripe"]');
-  const disableWechat = !channelEnabled("wechat");
-  const disableAlipay = !channelEnabled("alipay");
-  const disableStripe = !channelEnabled("stripe");
-  if (stripeOption) stripeOption.disabled = disableStripe;
-  const wechatOption = els.payChannelSelect.querySelector('option[value="wechat"]');
-  const alipayOption = els.payChannelSelect.querySelector('option[value="alipay"]');
-  if (wechatOption) wechatOption.disabled = disableWechat;
-  if (alipayOption) alipayOption.disabled = disableAlipay;
+  if (paymentsEnabled) {
+    els.payChannelSelect.disabled = false;
+    els.payChannelSelect.value = currentChannel;
+    const stripeOption = els.payChannelSelect.querySelector('option[value="stripe"]');
+    const disableWechat = !channelEnabled("wechat");
+    const disableAlipay = !channelEnabled("alipay");
+    const disableStripe = !channelEnabled("stripe");
+    if (stripeOption) stripeOption.disabled = disableStripe;
+    const wechatOption = els.payChannelSelect.querySelector('option[value="wechat"]');
+    const alipayOption = els.payChannelSelect.querySelector('option[value="alipay"]');
+    if (wechatOption) wechatOption.disabled = disableWechat;
+    if (alipayOption) alipayOption.disabled = disableAlipay;
 
-  const monthlyOption = els.billingIntervalSelect.querySelector('option[value="monthly"]');
-  const yearlyOption = els.billingIntervalSelect.querySelector('option[value="yearly"]');
-  if (monthlyOption) monthlyOption.disabled = currentChannel !== "stripe" || !monthlyEnabled;
-  if (yearlyOption) yearlyOption.disabled = currentChannel !== "stripe" || !yearlyEnabled;
-  els.billingIntervalSelect.value = currentInterval;
-  els.billingIntervalSelect.disabled = currentChannel !== "stripe";
-  if (currentInterval !== state.billingOrder.interval) {
-    updateBillingOrder({ interval: currentInterval }, false);
+    const monthlyOption = els.billingIntervalSelect.querySelector('option[value="monthly"]');
+    const yearlyOption = els.billingIntervalSelect.querySelector('option[value="yearly"]');
+    const stripeUsesPaymentLink = currentChannel === "stripe" && stripePaymentLinkReady;
+    if (monthlyOption) {
+      monthlyOption.disabled = currentChannel !== "stripe" || stripeUsesPaymentLink || !monthlyEnabled;
+    }
+    if (yearlyOption) {
+      yearlyOption.disabled = currentChannel !== "stripe" || stripeUsesPaymentLink || !yearlyEnabled;
+    }
+    els.billingIntervalSelect.value = currentInterval;
+    els.billingIntervalSelect.disabled = currentChannel !== "stripe" || stripeUsesPaymentLink;
+    if (currentInterval !== state.billingOrder.interval) {
+      updateBillingOrder({ interval: currentInterval }, false);
+    }
+  } else {
+    els.payChannelSelect.disabled = true;
+    els.billingIntervalSelect.disabled = true;
   }
 
-  const canStripeCheckout = channelEnabled("stripe") && Boolean(stripeConfig.checkoutReady);
+  const canStripeCheckout =
+    channelEnabled("stripe") && Boolean(stripeConfig.checkoutReady || stripePaymentLinkReady);
   const canSelectedChannelPay =
     currentChannel === "stripe" ? canStripeCheckout : channelEnabled(currentChannel);
-  els.upgradeProBtn.disabled = plan === "pro" || !canSelectedChannelPay;
+  els.upgradeProBtn.disabled = !paymentsEnabled || plan === "pro" || !canSelectedChannelPay;
   els.upgradeProBtn.textContent = isRegistered ? "订阅 Pro" : "注册并升级";
   if (els.pullSyncBtn) els.pullSyncBtn.disabled = !isRegistered;
   if (els.pushSyncBtn) els.pushSyncBtn.disabled = !isRegistered;
-  if (els.fileInput) els.fileInput.disabled = !isRegistered;
+  // Keep upload clickable in guest mode so users receive a clear upgrade/register prompt.
+  if (els.fileInput) els.fileInput.disabled = false;
   if (els.exportProgressBtn) els.exportProgressBtn.disabled = !isRegistered;
   if (els.deleteBookBtn) els.deleteBookBtn.disabled = !isRegistered || !state.book?.id;
   if (els.deleteCloudBtn) els.deleteCloudBtn.disabled = !isRegistered;
   if (els.deleteAccountBtn) els.deleteAccountBtn.disabled = !isRegistered;
 
-  if (currentChannel === "stripe") {
+  if (!paymentsEnabled) {
+    els.manageBillingBtn.disabled = true;
+    els.manageBillingBtn.textContent = "管理订阅";
+    if (els.billingFlowHint) {
+      els.billingFlowHint.textContent = "Pro is not available yet.";
+    }
+  } else if (currentChannel === "stripe") {
     const hasCustomer = Boolean(stripeConfig.customerId);
-    const canOpenPortal = Boolean(stripeConfig.portalReady && hasCustomer);
+    const canOpenPortal = Boolean(stripeConfig.portalReady && hasCustomer && !stripePaymentLinkReady);
     els.manageBillingBtn.disabled = !isRegistered || !canOpenPortal;
     els.manageBillingBtn.textContent = "管理订阅";
     if (els.billingFlowHint) {
-      if (!stripeConfig.checkoutReady) {
+      if (stripePaymentLinkReady) {
+        els.billingFlowHint.textContent = "Upgrade will open Stripe Payment Link.";
+      } else if (!stripeConfig.checkoutReady) {
         els.billingFlowHint.textContent = "Stripe 未完成配置（秘钥或价格缺失），请先补全后端环境变量。";
       } else {
         const intervalLabel = currentInterval === "yearly" ? "年付" : "月付";
@@ -3228,6 +3994,24 @@ function renderBillingUi() {
   }
 }
 
+async function refreshPaymentOptions(silent = true) {
+  if (!state.apiOnline) {
+    updateBilling({ paymentEnabled: false });
+    return false;
+  }
+  try {
+    const payload = await fetchJson("/api/payment/options", { method: "GET" });
+    updateBilling({ paymentEnabled: Boolean(payload?.enabled) });
+    return true;
+  } catch (error) {
+    updateBilling({ paymentEnabled: false });
+    if (!silent) {
+      setStatus(`支付配置拉取失败：${error.message}`, true);
+    }
+    return false;
+  }
+}
+
 async function refreshBillingPlan(silent = false) {
   const userId = sanitizeSyncUserId(state.sync.userId);
   updateBilling({ userId });
@@ -3236,6 +4020,7 @@ async function refreshBillingPlan(silent = false) {
     return false;
   }
   try {
+    await refreshPaymentOptions(true);
     const payload = await fetchJson(
       `/api/billing/plan?userId=${encodeURIComponent(userId)}`,
       { method: "GET" }
@@ -3272,21 +4057,42 @@ function onBillingIntervalChange() {
 }
 
 async function onRegisterAccount(options = {}) {
-  const targetUserId = sanitizeSyncUserId(els.registerAccountInput?.value || "");
-  if (!targetUserId) {
-    setStatus("请输入账号 ID。", true);
+  const username = String(els.registerAccountInput?.value || "").trim().toLowerCase();
+  const password = String(els.registerPasswordInput?.value || "");
+  if (els.registerAccountInput) {
+    els.registerAccountInput.value = username;
+  }
+  if (
+    !username ||
+    !REGISTER_USERNAME_RE.test(username) ||
+    username === "default" ||
+    username.startsWith("guest_") ||
+    username.startsWith("guest-")
+  ) {
+    const message = REGISTER_ERROR_MESSAGES.INVALID_USERNAME;
+    setStatus(message, true);
+    showToast(message, true);
+    return false;
+  }
+  if (password.length < 8) {
+    const message = REGISTER_ERROR_MESSAGES.WEAK_PASSWORD;
+    setStatus(message, true);
+    showToast(message, true);
     return false;
   }
   if (!state.apiOnline) {
     setStatus("API 离线，暂时无法注册账号。", true);
+    showToast("API 离线，暂时无法注册账号。", true);
     return false;
   }
+  setRegisterButtonLoading(true);
   try {
     const payload = await fetchJson("/api/auth/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        userId: targetUserId,
+        username,
+        password,
         anonymousId: state.sync.anonymousId || state.sync.userId,
         snapshot: createSnapshot(),
       }),
@@ -3294,13 +4100,13 @@ async function onRegisterAccount(options = {}) {
     state.sync = {
       ...DEFAULT_SYNC,
       ...state.sync,
-      userId: payload.account?.userId || targetUserId,
+      userId: payload.account?.userId || payload.userId || username,
       accountMode: "registered",
       accountToken: String(payload.account?.accountToken || ""),
       anonymousId: "",
       registeredAt: Date.now(),
     };
-    saveJSON(STORAGE_KEYS.sync, state.sync);
+    persistSyncState();
     if (payload?.snapshot) {
       applySnapshot(payload.snapshot);
     }
@@ -3309,17 +4115,82 @@ async function onRegisterAccount(options = {}) {
     } else {
       await refreshBillingPlan(true);
     }
+    renderSyncUi();
+    renderBillingUi();
+    renderExplainPanel();
+    closeAccountModal();
     if (els.registerAccountInput) {
       els.registerAccountInput.value = "";
     }
-    setStatus(`账号已注册并完成合并：${state.sync.userId}`);
+    if (els.registerPasswordInput) {
+      els.registerPasswordInput.value = "";
+    }
+    showToast("Account created successfully.");
+    setStatus("Account created successfully.");
     if (options.upgradeAfter) {
       await onUpgradeProPlan();
     }
     return true;
   } catch (error) {
-    setStatus(`注册失败：${error.message}`, true);
+    const message = getRegisterErrorMessage(error);
+    setStatus(message, true);
+    showToast(message, true);
     return false;
+  } finally {
+    setRegisterButtonLoading(false);
+  }
+}
+
+async function loginAccount() {
+  const username = String(els.loginAccountInput?.value || "").trim().toLowerCase();
+  const password = String(els.loginPasswordInput?.value || "");
+  if (els.loginAccountInput) {
+    els.loginAccountInput.value = username;
+  }
+  if (!username || !password) {
+    const message = "Enter your username and password.";
+    setStatus(message, true);
+    showToast(message, true);
+    return false;
+  }
+  if (!state.apiOnline) {
+    const message = "API 离线，暂时无法登录账号。";
+    setStatus(message, true);
+    showToast(message, true);
+    return false;
+  }
+  setLoginButtonLoading(true);
+  try {
+    const payload = await fetchJson("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username,
+        password,
+      }),
+    });
+    state.sync = {
+      ...DEFAULT_SYNC,
+      ...state.sync,
+      userId: sanitizeSyncUserId(payload.account?.userId || username),
+      accountMode: "registered",
+      accountToken: String(payload.account?.accountToken || "").trim(),
+      anonymousId: "",
+      registeredAt: state.sync.registeredAt || Date.now(),
+    };
+    persistSyncState();
+    localStorage.setItem("accountToken", state.sync.accountToken);
+    localStorage.setItem("userId", state.sync.userId);
+    closeAccountModal();
+    window.location.reload();
+    return true;
+  } catch (error) {
+    const message = getLoginErrorMessage(error);
+    setStatus(message, true);
+    showToast(message, true);
+    return false;
+  } finally {
+    setLoginButtonLoading(false);
   }
 }
 
@@ -3367,6 +4238,10 @@ async function completeStripeCheckout(sessionId) {
 }
 
 async function onUpgradeProPlan() {
+  if (!state.billing.paymentEnabled) {
+    setStatus("Pro is not available yet.", true);
+    return;
+  }
   if (state.sync.accountMode !== "registered") {
     const registered = await onRegisterAccount({ upgradeAfter: false });
     if (!registered) return;
@@ -3376,11 +4251,15 @@ async function onUpgradeProPlan() {
     setStatus("API 离线，无法发起支付。", true);
     return;
   }
+  const stripeConfig = state.billing.stripe || {};
+  const hasStripePaymentLink = Boolean(
+    stripeConfig.paymentLinkReady && String(stripeConfig.paymentLink || "").trim()
+  );
+  const channel = hasStripePaymentLink ? "stripe" : activePayChannel();
   void trackEvent("upgrade_clicked", {
-    channel: activePayChannel(),
+    channel,
     plan: state.billing.plan,
   });
-  const channel = activePayChannel();
   if (!channelEnabled(channel)) {
     setStatus("当前支付渠道不可用。", true);
     return;
@@ -3393,6 +4272,13 @@ async function onUpgradeProPlan() {
 }
 
 async function onUpgradeProPlanByStripe() {
+  const stripeConfig = state.billing.stripe || {};
+  const paymentLink = String(stripeConfig.paymentLink || "").trim();
+  if (Boolean(stripeConfig.paymentLinkReady) && paymentLink) {
+    setStatus("Opening Stripe Payment Link...");
+    window.location.assign(paymentLink);
+    return;
+  }
   const interval = normalizeBillingInterval(state.billingOrder.interval || "monthly");
   try {
     const payload = await fetchJson("/api/billing/create-checkout-session", {
@@ -3414,7 +4300,7 @@ async function onUpgradeProPlanByStripe() {
         sessionId: String(payload.sessionId || ""),
       });
     }
-    const checkoutUrl = String(payload?.checkoutUrl || "").trim();
+    const checkoutUrl = String(payload?.url || payload?.checkoutUrl || "").trim();
     if (!checkoutUrl) {
       setStatus("Stripe Checkout URL 为空，请检查后端配置。", true);
       return;
@@ -3680,6 +4566,7 @@ async function onDeleteAccount() {
     state.stats = { lookupCount: 0, totalSeconds: 0 };
     state.book = null;
     state.currentChapter = 0;
+    syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
     state.sync = { ...DEFAULT_SYNC };
     ensureSessionIdentity();
     state.billing = normalizeBilling(DEFAULT_BILLING);
@@ -3687,7 +4574,7 @@ async function onDeleteAccount() {
     saveJSON(STORAGE_KEYS.notes, state.notes);
     saveJSON(STORAGE_KEYS.bookmarks, state.bookmarks);
     saveJSON(STORAGE_KEYS.stats, state.stats);
-    saveJSON(STORAGE_KEYS.sync, state.sync);
+    persistSyncState();
     saveJSON(STORAGE_KEYS.billing, state.billing);
     await onLoadSampleBook({ silentStatus: true });
     await refreshBillingPlan(true);
@@ -3700,15 +4587,15 @@ async function onDeleteAccount() {
 function renderSyncUi() {
   if (els.userIdInput) {
     els.userIdInput.value =
-      state.sync.accountMode === "registered"
-        ? state.sync.userId
+      isRegisteredAccount()
+        ? currentAccountName()
         : state.sync.anonymousId || "游客模式";
     els.userIdInput.disabled = true;
   }
 }
 
 function onSyncUserChange(options = {}) {
-  saveJSON(STORAGE_KEYS.sync, state.sync);
+  persistSyncState();
   if (options.refreshBilling !== false) {
     void refreshBillingPlan(true);
   }
@@ -3803,6 +4690,7 @@ function applySnapshot(snapshot) {
     state.book = normalizeBook(snapshot.book);
   }
   state.currentChapter = clampChapterIndex(snapshot.currentChapter);
+  syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
   if (Array.isArray(snapshot.vocab)) state.vocab = snapshot.vocab;
   if (Array.isArray(snapshot.notes)) state.notes = snapshot.notes;
   if (Array.isArray(snapshot.bookmarks)) state.bookmarks = snapshot.bookmarks;
@@ -3835,8 +4723,11 @@ function applySnapshot(snapshot) {
     state.sync.userId = sanitizeSyncUserId(state.sync.userId) || createAnonymousId();
     state.sync.anonymousId = state.sync.userId;
   }
+  persistSyncState();
   updateBilling({ userId: state.sync.userId }, false);
+  state.scrollBaseChapter = clampChapterIndex(state.currentChapter);
   state.renderedChapterCount = initialRenderedChapterCount();
+  syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
   state.selected = null;
   state.selectedSentence = null;
   state.explain = {
@@ -3930,14 +4821,13 @@ function onStopTts() {
 }
 
 function persistAll() {
-  saveJSON(STORAGE_KEYS.book, state.book);
-  saveJSON(STORAGE_KEYS.currentChapter, state.currentChapter);
+  persistBookState();
   saveJSON(STORAGE_KEYS.vocab, state.vocab);
   saveJSON(STORAGE_KEYS.notes, state.notes);
   saveJSON(STORAGE_KEYS.bookmarks, state.bookmarks);
   saveJSON(STORAGE_KEYS.settings, state.settings);
   saveJSON(STORAGE_KEYS.stats, state.stats);
-  saveJSON(STORAGE_KEYS.sync, state.sync);
+  persistSyncState();
   saveJSON(STORAGE_KEYS.billing, state.billing);
   saveJSON(STORAGE_KEYS.billingOrder, state.billingOrder);
 }
@@ -4048,7 +4938,123 @@ function loadJSON(key, fallback) {
   }
 }
 
+function setRegisterButtonLoading(isLoading) {
+  state.registeringAccount = Boolean(isLoading);
+  if (els.registerAccountInput) {
+    els.registerAccountInput.disabled =
+      state.registeringAccount || isRegisteredAccount() || state.loggingInAccount;
+  }
+  if (els.registerPasswordInput) {
+    els.registerPasswordInput.disabled =
+      state.registeringAccount || isRegisteredAccount() || state.loggingInAccount;
+  }
+  if (!els.registerAccountButton) return;
+  els.registerAccountButton.disabled =
+    state.registeringAccount || isRegisteredAccount() || state.loggingInAccount;
+  els.registerAccountButton.textContent = state.registeringAccount
+    ? REGISTER_LOADING_LABEL
+    : REGISTER_BUTTON_LABEL;
+}
+
+function setLoginButtonLoading(isLoading) {
+  state.loggingInAccount = Boolean(isLoading);
+  if (els.loginAccountInput) {
+    els.loginAccountInput.disabled =
+      state.loggingInAccount || isRegisteredAccount() || state.registeringAccount;
+  }
+  if (els.loginPasswordInput) {
+    els.loginPasswordInput.disabled =
+      state.loggingInAccount || isRegisteredAccount() || state.registeringAccount;
+  }
+  if (!els.loginButton) return;
+  els.loginButton.disabled = state.loggingInAccount || isRegisteredAccount() || state.registeringAccount;
+  els.loginButton.textContent = state.loggingInAccount ? LOGIN_LOADING_LABEL : LOGIN_BUTTON_LABEL;
+}
+
+function shouldPersistBookStateToLocal() {
+  if (state.sync.accountMode === "registered") return true;
+  return Boolean(state.book?.sampleSlug);
+}
+
+function clearPersistedBookState() {
+  localStorage.removeItem(STORAGE_KEYS.book);
+  localStorage.removeItem(STORAGE_KEYS.currentChapter);
+}
+
+function persistBookState(options = {}) {
+  const persistLocal =
+    options.persistLocal === undefined
+      ? shouldPersistBookStateToLocal()
+      : Boolean(options.persistLocal);
+  if (!persistLocal) {
+    clearPersistedBookState();
+    return;
+  }
+  saveJSON(STORAGE_KEYS.book, state.book);
+  saveJSON(STORAGE_KEYS.currentChapter, state.currentChapter);
+}
+
+function persistCurrentChapterState() {
+  if (!shouldPersistBookStateToLocal()) {
+    clearPersistedBookState();
+    return;
+  }
+  saveJSON(STORAGE_KEYS.currentChapter, state.currentChapter);
+}
+
+function getRegisterErrorMessage(error) {
+  const code = String(error?.payload?.code || error?.code || "")
+    .trim()
+    .toUpperCase();
+  if (code === "ACCOUNT_EXISTS") {
+    return REGISTER_ERROR_MESSAGES.USERNAME_EXISTS;
+  }
+  return REGISTER_ERROR_MESSAGES[code] || String(error?.message || "Registration failed.");
+}
+
+function getLoginErrorMessage(error) {
+  const code = String(error?.payload?.code || error?.code || "")
+    .trim()
+    .toUpperCase();
+  return LOGIN_ERROR_MESSAGES[code] || String(error?.message || "Login failed.");
+}
+
+function logoutAccount() {
+  localStorage.removeItem("accountToken");
+  localStorage.removeItem("userId");
+
+  const guestId = createAnonymousId();
+  localStorage.setItem("userId", guestId);
+
+  state.sync = {
+    ...DEFAULT_SYNC,
+    userId: guestId,
+    anonymousId: guestId,
+    accountMode: "guest",
+    accountToken: "",
+    registeredAt: 0,
+  };
+  state.billing = normalizeBilling({
+    ...DEFAULT_BILLING,
+    userId: guestId,
+    accountMode: "guest",
+  });
+  state.billingOrder = normalizeBillingOrder({});
+  persistSyncState();
+  saveJSON(STORAGE_KEYS.billing, state.billing);
+  saveJSON(STORAGE_KEYS.billingOrder, state.billingOrder);
+
+  window.location.reload();
+}
+
 function saveJSON(key, value) {
+  if (
+    (key === STORAGE_KEYS.book || key === STORAGE_KEYS.currentChapter) &&
+    !shouldPersistBookStateToLocal()
+  ) {
+    localStorage.removeItem(key);
+    return;
+  }
   localStorage.setItem(key, JSON.stringify(value));
 }
 
