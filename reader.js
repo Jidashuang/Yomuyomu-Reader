@@ -30,7 +30,7 @@ export function initApp() {
   state.billing = normalizeBilling(state.billing);
   state.billingOrder = normalizeBillingOrder(state.billingOrder);
   if (!state.billingOrder.channel) {
-    state.billingOrder.channel = "stripe";
+    state.billingOrder.channel = "wechat";
   }
   updateBilling({ userId: state.sync.userId }, false);
   bindEvents();
@@ -57,17 +57,17 @@ export function initApp() {
 }
 
 const REGISTER_USERNAME_RE = /^[a-z0-9_-]{3,32}$/;
-const REGISTER_BUTTON_LABEL = "Register";
-const REGISTER_LOADING_LABEL = "Registering...";
+const REGISTER_BUTTON_LABEL = "注册";
+const REGISTER_LOADING_LABEL = "注册中...";
 const REGISTER_ERROR_MESSAGES = {
-  INVALID_USERNAME: "Invalid username. Use lowercase letters, numbers, _ or -",
-  WEAK_PASSWORD: "Password must be at least 8 characters.",
-  USERNAME_EXISTS: "Username already exists.",
+  INVALID_USERNAME: "用户名不合法，请使用小写字母、数字、_ 或 -。",
+  WEAK_PASSWORD: "密码至少需要 8 位。",
+  USERNAME_EXISTS: "用户名已存在。",
 };
-const LOGIN_BUTTON_LABEL = "Login";
-const LOGIN_LOADING_LABEL = "Logging in...";
+const LOGIN_BUTTON_LABEL = "登录";
+const LOGIN_LOADING_LABEL = "登录中...";
 const LOGIN_ERROR_MESSAGES = {
-  INVALID_CREDENTIALS: "Invalid username or password.",
+  INVALID_CREDENTIALS: "用户名或密码错误。",
 };
 const RIGHT_PANEL_TABS = ["vocab", "notes", "more"];
 
@@ -324,6 +324,12 @@ function bindEvents() {
     closeAccountMenu();
     void onSyncPush();
   });
+  els.cloudPullActionBtn?.addEventListener("click", () => {
+    void onSyncPull();
+  });
+  els.cloudPushActionBtn?.addEventListener("click", () => {
+    void onSyncPush();
+  });
   els.reportIssueBtn?.addEventListener("click", () => {
     void openFeedbackPrompt("bug");
   });
@@ -335,7 +341,7 @@ function bindEvents() {
   els.upgradeProBtn.addEventListener("click", onUpgradeProPlan);
   els.manageBillingBtn.addEventListener("click", onOpenBillingPortal);
   els.joinWaitlistBtn?.addEventListener("click", () => {
-    showToast("Pro is not available yet.");
+    showToast("当前暂未开放升级。");
   });
 
   document.addEventListener("click", (event) => {
@@ -2689,8 +2695,8 @@ function renderExplainPanel() {
     const isUnlimited = limit < 0 || remaining < 0;
     const prefix = state.sync.accountMode === "registered" ? "账号" : "游客";
     els.explainQuota.textContent = isUnlimited
-      ? `${prefix} explain 配额：不限量`
-      : `${prefix} explain 剩余：${remaining} / ${limit}`;
+      ? `${prefix} AI 解释配额：不限量`
+      : `${prefix} AI 解释剩余：${remaining} / ${limit}`;
   }
   if (explain.loading) {
     els.explainStatus.textContent = "AI 正在解释句子...";
@@ -2801,11 +2807,11 @@ async function explainSentence(sentence, meta = {}) {
     const errorCode = String(error?.payload?.code || "").trim().toUpperCase();
     let friendly = `句子解释失败：${String(error?.message || "").trim() || "未知错误"}`;
     if (errorCode === "AI_NOT_CONFIGURED") {
-      friendly = "AI explanation is not available yet.";
+      friendly = "AI 解释功能暂未配置。";
     } else if (errorCode === "EXPLAIN_LIMIT_REACHED") {
-      friendly = "You’ve reached today’s AI explanation limit.";
+      friendly = "今日 AI 解释次数已用完。";
     } else if (errorCode === "AI_PROVIDER_ERROR") {
-      friendly = "AI explanation failed. Please try again later.";
+      friendly = "AI 解释服务暂时不可用，请稍后再试。";
     }
     state.explain = {
       loading: false,
@@ -3233,7 +3239,7 @@ async function exportVocabCsv() {
   a.remove();
   URL.revokeObjectURL(url);
   if (!fullExportEnabled) {
-    setStatus(`Free 套餐仅可导出前 ${maxRows} 条，升级 Pro 可导出全部。`, true);
+    setStatus(`基础版仅可导出前 ${maxRows} 条，升级 Pro 可导出全部。`, true);
   } else {
     setStatus(`导出完成，共 ${exportItems.length} 条。`);
   }
@@ -3499,10 +3505,14 @@ function makeStatusChip(label, value, tone = "normal") {
 
 function enabledPaymentChannelLabels(channels = {}) {
   const labels = [];
-  if (channels.stripe) labels.push("Stripe");
-  if (channels.wechat) labels.push("微信");
+  if (channels.wechat) labels.push("微信支付");
   if (channels.alipay) labels.push("支付宝");
+  if (channels.stripe) labels.push("Stripe（国际卡）");
   return labels;
+}
+
+function planUiLabel(plan) {
+  return normalizePlan(plan) === "pro" ? "Pro" : "基础版";
 }
 
 function renderApiStatus() {
@@ -3515,14 +3525,14 @@ function renderApiStatus() {
   if (state.apiOnline) {
     const chips = [
       makeStatusChip("API", tokenizerText, state.tokenizerBackend === "fallback" ? "warn" : "ok"),
-      makeStatusChip("套餐", plan.toUpperCase(), plan === "pro" ? "ok" : "warn"),
+      makeStatusChip("套餐", planUiLabel(plan), plan === "pro" ? "ok" : "warn"),
     ];
     els.apiStatus.innerHTML = chips.join("");
     return;
   }
   const offlineChips = [
     makeStatusChip("API", "离线", "bad"),
-    makeStatusChip("套餐", plan.toUpperCase(), plan === "pro" ? "ok" : "warn"),
+    makeStatusChip("套餐", planUiLabel(plan), plan === "pro" ? "ok" : "warn"),
   ];
   els.apiStatus.innerHTML = offlineChips.join("");
 }
@@ -3687,7 +3697,7 @@ function normalizeBillingOrder(raw) {
   return {
     orderId: String(source.orderId || ""),
     status: String(source.status || ""),
-    channel: normalizePayChannel(source.channel || "stripe"),
+    channel: normalizePayChannel(source.channel || "wechat"),
     interval: normalizeBillingInterval(source.interval || "monthly"),
     sessionId: String(source.sessionId || ""),
     paidAt: Number(source.paidAt || 0),
@@ -3729,9 +3739,9 @@ function channelEnabled(channel) {
 function activePayChannel() {
   const selected = normalizePayChannel(els.payChannelSelect?.value || state.billingOrder.channel);
   if (channelEnabled(selected)) return selected;
-  if (channelEnabled("stripe")) return "stripe";
   if (channelEnabled("wechat")) return "wechat";
   if (channelEnabled("alipay")) return "alipay";
+  if (channelEnabled("stripe")) return "stripe";
   return selected;
 }
 
@@ -3741,9 +3751,9 @@ function hasAnyPaymentChannel() {
 
 function paymentChannelLabel(channel) {
   const key = normalizePayChannel(channel);
-  if (key === "stripe") return "Stripe";
+  if (key === "stripe") return "Stripe（国际卡）";
   if (key === "alipay") return "支付宝";
-  return "微信";
+  return "微信支付";
 }
 
 function renderBillingUi() {
@@ -3768,7 +3778,7 @@ function renderBillingUi() {
   const enabledLabels = enabledPaymentChannelLabels(state.billing.paymentChannels);
   const channelText = enabledLabels.length ? enabledLabels.join(" / ") : "无可用通道";
   if (els.accountModeLabel) {
-    els.accountModeLabel.textContent = isRegistered ? accountName : "Guest mode";
+    els.accountModeLabel.textContent = isRegistered ? accountName : "游客模式";
   }
   if (els.accountMenu) {
     if (!isRegistered) {
@@ -3787,7 +3797,7 @@ function renderBillingUi() {
     els.usernameDisplay.textContent = isRegistered ? accountName : "";
   }
   if (els.userIdInput) {
-    els.userIdInput.value = isRegistered ? accountName : state.sync.anonymousId || "游客";
+    els.userIdInput.value = isRegistered ? accountName : state.sync.anonymousId || "游客模式";
     els.userIdInput.disabled = true;
   }
   if (els.accountGuestPanel) {
@@ -3800,7 +3810,7 @@ function renderBillingUi() {
     els.accountDisplayName.textContent = isRegistered ? accountName : "-";
   }
   if (els.accountPlanText) {
-    els.accountPlanText.textContent = plan === "pro" ? "Pro" : "Free";
+    els.accountPlanText.textContent = planUiLabel(plan);
   }
   if (els.logoutButton) {
     els.logoutButton.hidden = !isRegistered;
@@ -3861,23 +3871,23 @@ function renderBillingUi() {
     els.planFullBlock.hidden = minimalPlanCard;
   }
   if (els.planLabel) {
-    els.planLabel.textContent = plan.toUpperCase();
+    els.planLabel.textContent = planUiLabel(plan);
     els.planLabel.className = `plan-pill ${plan}`;
   }
   if (els.planComingSoon) {
     els.planComingSoon.hidden = true;
-    els.planComingSoon.textContent = "Pro is not available yet.";
+    els.planComingSoon.textContent = "当前暂未开放升级。";
   }
   if (els.planHint) {
     if (!paymentsEnabled) {
-      els.planHint.textContent = "Pro is not available yet.";
+      els.planHint.textContent = "当前暂未开放升级。";
     } else if (!hasAnyPaymentChannel()) {
-      els.planHint.textContent = `支付通道未开启，请配置 Stripe / 微信 / 支付宝。${statusText}${graceText}`;
+      els.planHint.textContent = `支付通道未开启，请配置微信支付 / 支付宝 / Stripe。${statusText}${graceText}`;
     } else {
       const baseHint =
         accountMode === "registered"
           ? `${plan === "pro" ? PRO_FEATURE_HINT : FREE_FEATURE_HINT} 当前价格 ${priceText}，支持 ${channelText}${statusText}${graceText}`
-          : `游客可直接读 sample，并使用少量 AI explain。注册后可升级并同步云端。`;
+          : `游客可先体验示例阅读与少量 AI 解释，注册后可升级并同步云端。`;
       els.planHint.textContent = baseHint;
     }
   }
@@ -3898,7 +3908,7 @@ function renderBillingUi() {
   }
   if (els.paymentDisabledHint) {
     els.paymentDisabledHint.hidden = true;
-    els.paymentDisabledHint.textContent = "Pro is not available yet.";
+    els.paymentDisabledHint.textContent = "当前暂未开放升级。";
   }
   if (els.billingFlowHint) {
     els.billingFlowHint.hidden = !paymentsEnabled;
@@ -3951,7 +3961,7 @@ function renderBillingUi() {
   const canSelectedChannelPay =
     currentChannel === "stripe" ? canStripeCheckout : channelEnabled(currentChannel);
   els.upgradeProBtn.disabled = !paymentsEnabled || plan === "pro" || !canSelectedChannelPay;
-  els.upgradeProBtn.textContent = isRegistered ? "订阅 Pro" : "注册并升级";
+  els.upgradeProBtn.textContent = isRegistered ? "升级 Pro" : "注册并升级";
   if (els.pullSyncBtn) els.pullSyncBtn.disabled = !isRegistered;
   if (els.pushSyncBtn) els.pushSyncBtn.disabled = !isRegistered;
   // Keep upload clickable in guest mode so users receive a clear upgrade/register prompt.
@@ -3963,9 +3973,9 @@ function renderBillingUi() {
 
   if (!paymentsEnabled) {
     els.manageBillingBtn.disabled = true;
-    els.manageBillingBtn.textContent = "管理订阅";
+    els.manageBillingBtn.textContent = "管理支付";
     if (els.billingFlowHint) {
-      els.billingFlowHint.textContent = "Pro is not available yet.";
+      els.billingFlowHint.textContent = "当前暂未开放升级。";
     }
   } else if (currentChannel === "stripe") {
     const hasCustomer = Boolean(stripeConfig.customerId);
@@ -3974,7 +3984,7 @@ function renderBillingUi() {
     els.manageBillingBtn.textContent = "管理订阅";
     if (els.billingFlowHint) {
       if (stripePaymentLinkReady) {
-        els.billingFlowHint.textContent = "Upgrade will open Stripe Payment Link.";
+        els.billingFlowHint.textContent = "升级将跳转到 Stripe 支付链接。";
       } else if (!stripeConfig.checkoutReady) {
         els.billingFlowHint.textContent = "Stripe 未完成配置（秘钥或价格缺失），请先补全后端环境变量。";
       } else {
@@ -3986,12 +3996,13 @@ function renderBillingUi() {
     const hasOrder = Boolean(state.billingOrder.orderId);
     els.manageBillingBtn.disabled = !isRegistered || !hasOrder;
     els.manageBillingBtn.textContent = state.billing.manualPaymentConfirmEnabled
-      ? "我已支付，确认开通"
+      ? "确认已支付"
       : "刷新支付状态";
     if (els.billingFlowHint) {
       els.billingFlowHint.textContent = `${paymentChannelLabel(currentChannel)} 支付完成后，点击右侧按钮同步开通状态。`;
     }
   }
+  renderSyncUi();
 }
 
 async function refreshPaymentOptions(silent = true) {
@@ -4035,7 +4046,7 @@ async function refreshBillingPlan(silent = false) {
       }
     }
     if (!silent) {
-      setStatus(`套餐已同步：${state.billing.plan.toUpperCase()}`);
+      setStatus(`套餐已同步：${planUiLabel(state.billing.plan)}`);
     }
     return true;
   } catch (error) {
@@ -4125,8 +4136,8 @@ async function onRegisterAccount(options = {}) {
     if (els.registerPasswordInput) {
       els.registerPasswordInput.value = "";
     }
-    showToast("Account created successfully.");
-    setStatus("Account created successfully.");
+    showToast("账号注册成功。");
+    setStatus("账号注册成功。");
     if (options.upgradeAfter) {
       await onUpgradeProPlan();
     }
@@ -4148,7 +4159,7 @@ async function loginAccount() {
     els.loginAccountInput.value = username;
   }
   if (!username || !password) {
-    const message = "Enter your username and password.";
+    const message = "请输入用户名和密码。";
     setStatus(message, true);
     showToast(message, true);
     return false;
@@ -4239,7 +4250,7 @@ async function completeStripeCheckout(sessionId) {
 
 async function onUpgradeProPlan() {
   if (!state.billing.paymentEnabled) {
-    setStatus("Pro is not available yet.", true);
+    setStatus("当前暂未开放升级。", true);
     return;
   }
   if (state.sync.accountMode !== "registered") {
@@ -4251,11 +4262,7 @@ async function onUpgradeProPlan() {
     setStatus("API 离线，无法发起支付。", true);
     return;
   }
-  const stripeConfig = state.billing.stripe || {};
-  const hasStripePaymentLink = Boolean(
-    stripeConfig.paymentLinkReady && String(stripeConfig.paymentLink || "").trim()
-  );
-  const channel = hasStripePaymentLink ? "stripe" : activePayChannel();
+  const channel = activePayChannel();
   void trackEvent("upgrade_clicked", {
     channel,
     plan: state.billing.plan,
@@ -4275,7 +4282,7 @@ async function onUpgradeProPlanByStripe() {
   const stripeConfig = state.billing.stripe || {};
   const paymentLink = String(stripeConfig.paymentLink || "").trim();
   if (Boolean(stripeConfig.paymentLinkReady) && paymentLink) {
-    setStatus("Opening Stripe Payment Link...");
+    setStatus("正在打开 Stripe 支付链接...");
     window.location.assign(paymentLink);
     return;
   }
@@ -4302,10 +4309,10 @@ async function onUpgradeProPlanByStripe() {
     }
     const checkoutUrl = String(payload?.url || payload?.checkoutUrl || "").trim();
     if (!checkoutUrl) {
-      setStatus("Stripe Checkout URL 为空，请检查后端配置。", true);
+      setStatus("Stripe 支付链接为空，请检查后端配置。", true);
       return;
     }
-    setStatus("正在跳转到 Stripe Checkout...");
+    setStatus("正在跳转到 Stripe 支付页面...");
     window.location.assign(checkoutUrl);
   } catch (error) {
     if (error?.payload?.billing) {
@@ -4343,7 +4350,7 @@ async function onUpgradeProPlanByLegacyChannel(channel) {
     if (payUrl) {
       window.open(payUrl, "_blank", "noopener,noreferrer");
     } else {
-      setStatus("未配置支付跳转链接。支付完成后点击“我已支付，确认开通”。", true);
+      setStatus("未配置支付跳转链接。支付完成后点击“确认已支付”。", true);
     }
   } catch (error) {
     if (error?.payload?.billing) {
@@ -4523,7 +4530,7 @@ async function onDeleteCurrentBook() {
       body: JSON.stringify({ userId: state.sync.userId }),
     });
     await onLoadSampleBook({ silentStatus: true });
-    setStatus("当前书籍已删除，已回到 sample。");
+    setStatus("当前书籍已删除，已回到示例书。");
   } catch (error) {
     setStatus(`删除书籍失败：${error.message}`, true);
   }
@@ -4584,13 +4591,67 @@ async function onDeleteAccount() {
   }
 }
 
+function updateCloudSyncMeta(payload = {}) {
+  state.sync = {
+    ...state.sync,
+    lastCloudSyncAction: String(payload.action || "").trim(),
+    lastCloudSyncStatus: String(payload.status || "").trim(),
+    lastCloudSyncMessage: String(payload.message || "").trim(),
+    lastCloudSyncAt: Number(payload.updatedAt || state.sync.lastCloudSyncAt || 0),
+  };
+  persistSyncState();
+  renderSyncUi();
+}
+
 function renderSyncUi() {
+  const isRegistered = isRegisteredAccount();
+  const cloudSyncEnabled = hasFeature("cloudSync");
+  const lastStatus = String(state.sync.lastCloudSyncStatus || "").trim();
+  const lastMessage = String(state.sync.lastCloudSyncMessage || "").trim();
+  const lastAction = String(state.sync.lastCloudSyncAction || "").trim();
+  const lastAt = Number(state.sync.lastCloudSyncAt || 0);
+
   if (els.userIdInput) {
     els.userIdInput.value =
-      isRegisteredAccount()
-        ? currentAccountName()
-        : state.sync.anonymousId || "游客模式";
+      isRegistered ? currentAccountName() : state.sync.anonymousId || "游客模式";
     els.userIdInput.disabled = true;
+  }
+  if (els.cloudSyncSummary) {
+    if (!isRegistered) {
+      els.cloudSyncSummary.textContent = "注册后可在多设备同步阅读进度、生词和批注。";
+    } else if (!cloudSyncEnabled) {
+      els.cloudSyncSummary.textContent = "当前套餐暂不含云同步，升级 Pro 后可使用。";
+    } else {
+      els.cloudSyncSummary.textContent = "支持手动上传当前进度到云端，或从云端拉取并覆盖本地。";
+    }
+  }
+  if (els.cloudSyncStatus) {
+    if (!lastStatus) {
+      els.cloudSyncStatus.textContent = "同步状态：尚未同步";
+    } else {
+      const actionText = lastAction === "pull" ? "拉取" : lastAction === "push" ? "上传" : "同步";
+      const statusText =
+        lastStatus === "success"
+          ? "成功"
+          : lastStatus === "empty"
+          ? "云端无数据"
+          : lastStatus === "blocked"
+          ? "权限受限"
+          : "失败";
+      const detail = lastMessage ? `（${lastMessage}）` : "";
+      els.cloudSyncStatus.textContent = `同步状态：${actionText}${statusText}${detail}`;
+    }
+  }
+  if (els.cloudSyncUpdatedAt) {
+    els.cloudSyncUpdatedAt.textContent = lastAt
+      ? `最近同步：${formatDateTime(lastAt)}`
+      : "最近同步：-";
+  }
+  if (els.cloudPullActionBtn) {
+    els.cloudPullActionBtn.disabled = false;
+  }
+  if (els.cloudPushActionBtn) {
+    els.cloudPushActionBtn.disabled = false;
   }
 }
 
@@ -4603,13 +4664,32 @@ function onSyncUserChange(options = {}) {
 
 async function onSyncPush() {
   onSyncUserChange({ refreshBilling: false });
+  if (!isRegisteredAccount()) {
+    updateCloudSyncMeta({
+      action: "push",
+      status: "blocked",
+      message: "请先登录或注册账号",
+    });
+    showToast("请先登录或注册账号后再使用云同步。", true);
+    return;
+  }
   if (!state.apiOnline) {
+    updateCloudSyncMeta({
+      action: "push",
+      status: "failed",
+      message: "API 离线",
+    });
     showToast("API 离线，无法云端上传。", true);
     return;
   }
   if (!hasFeature("cloudSync")) {
     await refreshBillingPlan(true);
     if (!hasFeature("cloudSync")) {
+      updateCloudSyncMeta({
+        action: "push",
+        status: "blocked",
+        message: "当前套餐不支持云同步",
+      });
       showToast("云同步仅对 Pro 套餐开放。", true);
       return;
     }
@@ -4624,24 +4704,54 @@ async function onSyncPush() {
       }),
     });
     if (!payload.ok) throw new Error(payload.error || "上传失败");
+    updateCloudSyncMeta({
+      action: "push",
+      status: "success",
+      message: "已上传到云端",
+      updatedAt: Number(payload?.data?.updatedAt || Date.now()),
+    });
     setStatus(`云端上传成功（用户: ${state.sync.userId}）。`);
   } catch (error) {
     if (error?.payload?.billing) {
       updateBilling(error.payload.billing);
     }
+    updateCloudSyncMeta({
+      action: "push",
+      status: "failed",
+      message: String(error?.message || "上传失败"),
+    });
     showToast(`云端上传失败：${error.message}`, true);
   }
 }
 
 async function onSyncPull() {
   onSyncUserChange({ refreshBilling: false });
+  if (!isRegisteredAccount()) {
+    updateCloudSyncMeta({
+      action: "pull",
+      status: "blocked",
+      message: "请先登录或注册账号",
+    });
+    showToast("请先登录或注册账号后再使用云同步。", true);
+    return;
+  }
   if (!state.apiOnline) {
+    updateCloudSyncMeta({
+      action: "pull",
+      status: "failed",
+      message: "API 离线",
+    });
     showToast("API 离线，无法云端拉取。", true);
     return;
   }
   if (!hasFeature("cloudSync")) {
     await refreshBillingPlan(true);
     if (!hasFeature("cloudSync")) {
+      updateCloudSyncMeta({
+        action: "pull",
+        status: "blocked",
+        message: "当前套餐不支持云同步",
+      });
       showToast("云同步仅对 Pro 套餐开放。", true);
       return;
     }
@@ -4654,15 +4764,32 @@ async function onSyncPull() {
     if (!payload.ok) throw new Error(payload.error || "拉取失败");
     const snapshot = payload.data?.snapshot || {};
     if (!Object.keys(snapshot).length) {
+      updateCloudSyncMeta({
+        action: "pull",
+        status: "empty",
+        message: "云端暂无可用数据",
+        updatedAt: Number(payload?.data?.updatedAt || 0),
+      });
       setStatus("云端暂无可用数据。");
       return;
     }
     applySnapshot(snapshot);
+    updateCloudSyncMeta({
+      action: "pull",
+      status: "success",
+      message: "已拉取云端数据",
+      updatedAt: Number(payload?.data?.updatedAt || Date.now()),
+    });
     setStatus(`云端拉取成功（用户: ${state.sync.userId}）。`);
   } catch (error) {
     if (error?.payload?.billing) {
       updateBilling(error.payload.billing);
     }
+    updateCloudSyncMeta({
+      action: "pull",
+      status: "failed",
+      message: String(error?.message || "拉取失败"),
+    });
     showToast(`云端拉取失败：${error.message}`, true);
   }
 }
@@ -5009,14 +5136,14 @@ function getRegisterErrorMessage(error) {
   if (code === "ACCOUNT_EXISTS") {
     return REGISTER_ERROR_MESSAGES.USERNAME_EXISTS;
   }
-  return REGISTER_ERROR_MESSAGES[code] || String(error?.message || "Registration failed.");
+  return REGISTER_ERROR_MESSAGES[code] || String(error?.message || "注册失败。");
 }
 
 function getLoginErrorMessage(error) {
   const code = String(error?.payload?.code || error?.code || "")
     .trim()
     .toUpperCase();
-  return LOGIN_ERROR_MESSAGES[code] || String(error?.message || "Login failed.");
+  return LOGIN_ERROR_MESSAGES[code] || String(error?.message || "登录失败。");
 }
 
 function logoutAccount() {
@@ -5097,6 +5224,14 @@ function formatDate(ts) {
     2,
     "0"
   )}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function formatDateTime(ts) {
+  const date = new Date(ts);
+  if (!Number.isFinite(date.getTime())) return "-";
+  return `${formatDate(ts)} ${String(date.getHours()).padStart(2, "0")}:${String(
+    date.getMinutes()
+  ).padStart(2, "0")}`;
 }
 
 function bookHasPrecomputedAnalysis() {

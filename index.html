@@ -18,12 +18,12 @@
     <header class="app-header">
       <div class="logo">
         <h1>YomuYomu</h1>
-        <span>Read Japanese Faster</span>
+        <span>更顺畅地读日语原著</span>
       </div>
 
       <div class="header-actions">
         <label id="importBookBtn" class="file-btn header-btn">
-          Import Book
+          导入书籍
           <input
             id="fileInput"
             type="file"
@@ -31,32 +31,32 @@
           />
         </label>
         <button id="loadSampleBtn" class="secondary-btn header-btn" data-testid="import-sample-btn">
-          Sample Book
+          示例书籍
         </button>
       </div>
 
       <div class="header-account">
         <details id="accountMenu" class="account-menu">
           <summary id="accountMenuSummary">
-            <span id="accountModeLabel" class="account-status">Guest mode</span>
+            <span id="accountModeLabel" class="account-status">游客模式</span>
             <span class="account-caret" aria-hidden="true">▾</span>
           </summary>
           <div class="account-menu-items">
-            <button id="signInButton" class="tiny-btn" type="button">Sign in</button>
-            <button id="registerMenuButton" class="tiny-btn" type="button">Register</button>
-            <button id="pullSyncBtn" class="tiny-btn" type="button" hidden>Cloud Pull</button>
-            <button id="pushSyncBtn" class="tiny-btn" type="button" hidden>Cloud Push</button>
-            <button id="logoutButton" class="tiny-btn" type="button" hidden>Logout</button>
+            <button id="signInButton" class="tiny-btn" type="button">登录</button>
+            <button id="registerMenuButton" class="tiny-btn" type="button">注册</button>
+            <button id="pullSyncBtn" class="tiny-btn" type="button" hidden>云端拉取</button>
+            <button id="pushSyncBtn" class="tiny-btn" type="button" hidden>云端上传</button>
+            <button id="logoutButton" class="tiny-btn" type="button" hidden>退出登录</button>
           </div>
         </details>
       </div>
-      <span class="visually-hidden">Logged in as <strong id="usernameDisplay"></strong></span>
+      <span class="visually-hidden">当前登录账号 <strong id="usernameDisplay"></strong></span>
     </header>
 
     <main class="layout reader-layout">
       <aside class="left-panel">
         <section class="card book-card">
-          <h3>Book Info</h3>
+          <h3>书籍信息</h3>
           <p id="bookTitle" class="book-title">未导入书籍</p>
           <p id="bookAuthor" class="meta" hidden>作者: -</p>
           <p id="bookMeta" class="meta">格式: -</p>
@@ -68,13 +68,13 @@
         <p id="statusText" class="status-text">就绪</p>
 
         <section class="card toc-card">
-          <h3>Table of Contents</h3>
+          <h3>目录</h3>
           <ul id="chapterList" class="simple-list" data-testid="chapter-list"></ul>
         </section>
 
         <section class="card bookmarks-card">
           <div class="vocab-head">
-            <h3>Bookmarks</h3>
+            <h3>书签</h3>
             <button id="addBookmarkBtn" class="secondary-btn small">添加书签</button>
           </div>
           <ul id="bookmarkList" class="simple-list"></ul>
@@ -90,10 +90,10 @@
           <div class="reader-toolbar">
             <div class="reading-mode-switch" role="group" aria-label="阅读模式">
               <button id="scrollModeBtn" class="secondary-btn small mode-btn" data-reading-mode="scroll">
-                Scroll
+                滚动
               </button>
               <button id="pagedModeBtn" class="secondary-btn small mode-btn" data-reading-mode="paged">
-                Paged
+                分页
               </button>
             </div>
             <button id="toggleFocusBtn" class="secondary-btn small">专注模式: 关</button>
@@ -101,7 +101,7 @@
               <summary id="readerSettingsBtn" class="secondary-btn small" aria-haspopup="dialog">Aa</summary>
               <div id="readerSettingsPanel" class="reader-settings-panel" role="dialog" aria-label="阅读设置">
                 <div class="reader-setting-row">
-                  <label for="fontSizeRange">Font size</label>
+                  <label for="fontSizeRange">字号</label>
                   <input id="fontSizeRange" type="range" min="16" max="32" step="1" />
                   <div class="stepper-group">
                     <button id="fontDecreaseBtn" class="secondary-btn small" type="button">A-</button>
@@ -109,7 +109,7 @@
                   </div>
                 </div>
                 <div class="reader-setting-row">
-                  <label for="lineHeightRange">Line height</label>
+                  <label for="lineHeightRange">行距</label>
                   <input id="lineHeightRange" type="range" min="1.4" max="2.4" step="0.1" />
                   <div class="stepper-group">
                     <button id="lineHeightDecreaseBtn" class="secondary-btn small" type="button">行距-</button>
@@ -133,7 +133,7 @@
 
       <aside class="right-panel sidebar">
         <section class="card lookup-card">
-          <h3>Word / Dictionary</h3>
+          <h3>点词词典</h3>
           <p id="selectedWord" class="selected-word">未选中</p>
           <p id="selectedLemma" class="meta">原形: -</p>
           <p id="selectedReading" class="meta">读音: -</p>
@@ -166,9 +166,9 @@
         </section>
 
         <section class="card explain-card">
-          <h3>AI Explain</h3>
-          <p id="explainQuota" class="meta">游客 explain 剩余：- / -</p>
-          <p class="meta">Free users have limited AI explanations.</p>
+          <h3>AI 句子解释</h3>
+          <p id="explainQuota" class="meta">游客 AI 解释剩余：- / -</p>
+          <p class="meta">基础版用户每日 AI 解释次数有限。</p>
           <p id="explainStatus" class="meta" data-testid="explain-status">点击阅读区中的句子查看 AI 解释。</p>
           <p id="explainTranslation" class="meaning" data-testid="explain-translation"></p>
           <ul id="explainGrammar" class="simple-list compact-list" data-testid="explain-grammar"></ul>
@@ -178,9 +178,9 @@
 
         <section id="toolsSection" class="card tools-shell">
           <div id="rightTabs" class="right-tabs" role="tablist" aria-label="工具面板切换">
-            <button class="tab-btn active" data-tab="vocab" role="tab" aria-selected="true">Vocab</button>
-            <button class="tab-btn" data-tab="notes" role="tab" aria-selected="false">Notes</button>
-            <button class="tab-btn" data-tab="more" role="tab" aria-selected="false">More</button>
+            <button class="tab-btn active" data-tab="vocab" role="tab" aria-selected="true">生词</button>
+            <button class="tab-btn" data-tab="notes" role="tab" aria-selected="false">批注</button>
+            <button class="tab-btn" data-tab="more" role="tab" aria-selected="false">更多</button>
           </div>
 
           <div class="right-panes">
@@ -246,14 +246,21 @@
             <div class="right-pane" data-pane="more">
               <div class="more-accordion">
                 <details class="more-section" data-more-section="cloud">
-                  <summary>Cloud Sync</summary>
-                  <div class="more-section-body">
-                    <p class="meta">Cloud Pull / Push 已收纳到账户下拉菜单中。</p>
+                  <summary>云端同步</summary>
+                  <div class="more-section-body cloud-sync-panel">
+                    <p id="cloudSyncSummary" class="meta">将阅读进度、生词和批注同步到云端，支持多设备接续。</p>
+                    <p id="cloudSyncStatus" class="meta">同步状态：尚未同步</p>
+                    <p id="cloudSyncUpdatedAt" class="meta">最近同步：-</p>
+                    <div class="lookup-actions">
+                      <button id="cloudPullActionBtn" class="secondary-btn small" type="button">从云端拉取</button>
+                      <button id="cloudPushActionBtn" class="secondary-btn small" type="button">上传到云端</button>
+                    </div>
+                    <p class="meta">提示：拉取会以云端快照覆盖本地数据，请在需要时再执行。</p>
                   </div>
                 </details>
 
                 <details class="more-section" data-more-section="tts">
-                  <summary>TTS</summary>
+                  <summary>朗读（TTS）</summary>
                   <div class="more-section-body tts-card">
                     <label for="ttsVoiceSelect">语音</label>
                     <select id="ttsVoiceSelect"></select>
@@ -267,7 +274,7 @@
                 </details>
 
                 <details class="more-section" data-more-section="advanced">
-                  <summary>Advanced Reading Settings</summary>
+                  <summary>高级阅读设置</summary>
                   <div class="more-section-body settings-card">
                     <p class="meta">难度标注：N1 红色、N2 黄虚线、N3 绿色下划线。</p>
                     <label for="difficultyModeSelect">难度标注模式</label>
@@ -298,7 +305,7 @@
                 </details>
 
                 <details class="more-section" data-more-section="data">
-                  <summary>Data Controls</summary>
+                  <summary>数据管理</summary>
                   <div class="more-section-body data-card">
                     <div class="lookup-actions">
                       <button id="exportProgressBtn" class="secondary-btn small">导出进度</button>
@@ -314,21 +321,21 @@
                 </details>
 
                 <details class="more-section" data-more-section="plan">
-                  <summary>Plan / Billing</summary>
+                  <summary>套餐与支付</summary>
                   <div class="more-section-body">
                     <section id="planCard" class="plan-card">
                       <div id="planLiteBlock" class="plan-lite" hidden>
-                        <h4>Pro Features</h4>
-                        <p class="meta">Pro is not available yet.</p>
-                        <button id="joinWaitlistBtn" class="secondary-btn small" type="button">Join waitlist</button>
+                        <h4>Pro 能力</h4>
+                        <p class="meta">当前暂未开放升级。</p>
+                        <button id="joinWaitlistBtn" class="secondary-btn small" type="button">加入等待列表</button>
                       </div>
                       <div id="planFullBlock">
                         <div class="plan-head">
-                          <h3>Plan / Billing</h3>
-                          <span id="planLabel" class="plan-pill free">FREE</span>
+                          <h3>套餐与支付</h3>
+                          <span id="planLabel" class="plan-pill free">基础版</span>
                         </div>
-                        <p id="planHint" class="meta">Free：仅 TXT 导入，云同步与全量导出需升级。</p>
-                        <p id="planComingSoon" class="meta" hidden>Pro is not available yet.</p>
+                        <p id="planHint" class="meta">基础版：仅支持 TXT 导入，云同步与全量导出需升级。</p>
+                        <p id="planComingSoon" class="meta" hidden>当前暂未开放升级。</p>
                         <ul id="planBenefitList" class="plan-benefit-list">
                           <li>
                             <span>高级导入（EPUB/PDF/MOBI）</span>
@@ -346,9 +353,9 @@
                         <div id="paymentControls">
                           <label for="payChannelSelect">支付渠道</label>
                           <select id="payChannelSelect">
-                            <option value="stripe">Stripe（银行卡）</option>
                             <option value="wechat">微信支付</option>
                             <option value="alipay">支付宝</option>
+                            <option value="stripe">Stripe（国际卡）</option>
                           </select>
                           <label for="billingIntervalSelect">订阅周期</label>
                           <select id="billingIntervalSelect">
@@ -361,9 +368,9 @@
                           </div>
                         </div>
                         <p id="paymentDisabledHint" class="meta" hidden>
-                          Pro is not available yet.
+                          当前暂未开放升级。
                         </p>
-                        <p id="billingFlowHint" class="meta">Stripe 默认自动续费，可随时在管理页取消。</p>
+                        <p id="billingFlowHint" class="meta">微信/支付宝优先，Stripe 作为国际卡支付方式。</p>
                       </div>
                     </section>
                   </div>
@@ -377,7 +384,7 @@
 
     <section class="faq-section" id="faq" aria-labelledby="faqTitle">
       <div class="faq-header">
-        <p class="faq-eyebrow">FAQ</p>
+        <p class="faq-eyebrow">常见问题</p>
         <h2 id="faqTitle">常见问题</h2>
         <p>关于 YomuYomu，你可能想知道这些</p>
       </div>
@@ -399,7 +406,7 @@
             <span class="faq-icon" aria-hidden="true">▾</span>
           </summary>
           <p class="faq-answer">
-            不需要。你可以先用游客模式体验 sample 内容，也可以直接上传自己的文件开始阅读。如果你希望保存阅读进度、同步学习数据，或者未来升级
+            不需要。你可以先用游客模式体验示例内容，也可以直接上传自己的文件开始阅读。如果你希望保存阅读进度、同步学习数据，或者未来升级
             Pro，再注册账号即可。
           </p>
         </details>
@@ -410,7 +417,7 @@
             <span class="faq-icon" aria-hidden="true">▾</span>
           </summary>
           <p class="faq-answer">
-            游客模式适合快速体验：直接开始阅读、点词查询、使用有限次数的 AI explain。注册账号后可以获得更完整的体验，例如保存阅读进度、多设备同步、生词与批注的长期保存，以及未来升级
+            游客模式适合快速体验：直接开始阅读、点词查询、使用有限次数的 AI 解释。注册账号后可以获得更完整的体验，例如保存阅读进度、多设备同步、生词与批注的长期保存，以及未来升级
             Pro。
           </p>
         </details>
@@ -427,7 +434,7 @@
 
         <details class="faq-item">
           <summary class="faq-question">
-            <span>AI explain 免费吗？</span>
+            <span>AI 解释免费吗？</span>
             <span class="faq-icon" aria-hidden="true">▾</span>
           </summary>
           <p class="faq-answer">
@@ -482,7 +489,7 @@
             <span class="faq-icon" aria-hidden="true">▾</span>
           </summary>
           <p class="faq-answer">
-            普通词典和翻译工具更适合“查一个词”或“翻一句话”。YomuYomu 更关注的是帮助你连续读完真实日语内容。它把阅读、点词、JLPT 难度标注、AI explain
+            普通词典和翻译工具更适合“查一个词”或“翻一句话”。YomuYomu 更关注的是帮助你连续读完真实日语内容。它把阅读、点词、JLPT 难度标注、AI 解释
             和学习记录结合在一起，目标是减少阅读中断，而不是只做单次查询。
           </p>
         </details>
@@ -493,7 +500,7 @@
             <span class="faq-icon" aria-hidden="true">▾</span>
           </summary>
           <p class="faq-answer">
-            我们正在逐步加入和优化：更完整的 AI explain、生词本强化、更好的同步体验、Pro 订阅、更强的 PDF
+            我们正在逐步加入和优化：更完整的 AI 解释、生词本强化、更好的同步体验、Pro 订阅、更强的 PDF
             支持，以及更多学习辅助能力。如果你有特别想要的功能，也欢迎反馈。
           </p>
         </details>
@@ -504,7 +511,7 @@
             <span class="faq-icon" aria-hidden="true">▾</span>
           </summary>
           <p class="faq-answer">
-            当然可以。如果你遇到分词不准、点词异常、explain 不清楚、文件导入问题，或者有想要的新功能，都欢迎反馈。早期用户的每条反馈都很重要。
+            当然可以。如果你遇到分词不准、点词异常、AI 解释不清楚、文件导入问题，或者有想要的新功能，都欢迎反馈。早期用户的每条反馈都很重要。
           </p>
         </details>
       </div>
@@ -514,66 +521,66 @@
       <div id="accountModalBackdrop" class="account-modal-backdrop" aria-hidden="true"></div>
       <section class="account-modal-panel" role="dialog" aria-modal="true" aria-labelledby="accountModalTitle">
         <div class="account-modal-head">
-          <h3 id="accountModalTitle">Account</h3>
-          <button id="closeAccountModalBtn" class="secondary-btn small" type="button">Close</button>
+          <h3 id="accountModalTitle">账号</h3>
+          <button id="closeAccountModalBtn" class="secondary-btn small" type="button">关闭</button>
         </div>
 
         <div id="accountGuestPanel" class="account-panel-view">
           <div class="section-head">
             <div>
-              <h3>Register to sync progress</h3>
-              <p class="meta">Create an account to keep progress across devices.</p>
+              <h3>注册账号并开启云端同步</h3>
+              <p class="meta">注册后可跨设备同步阅读进度与学习记录。</p>
             </div>
           </div>
           <div class="account-form">
-            <label for="registerAccountInput">Username</label>
-            <input id="registerAccountInput" class="user-input" type="text" value="" placeholder="Username" />
-            <label for="registerPasswordInput">Password</label>
+            <label for="registerAccountInput">用户名</label>
+            <input id="registerAccountInput" class="user-input" type="text" value="" placeholder="请输入用户名" />
+            <label for="registerPasswordInput">密码</label>
             <input
               id="registerPasswordInput"
               class="user-input"
               type="password"
               value=""
-              placeholder="Password"
+              placeholder="请输入密码"
               autocomplete="new-password"
             />
-            <button id="registerAccountButton" class="secondary-btn">Register</button>
-            <p class="meta">Username must be 3–32 characters, lowercase letters, numbers, _ or -</p>
+            <button id="registerAccountButton" class="secondary-btn">注册</button>
+            <p class="meta">用户名需 3–32 位，仅支持小写字母、数字、_ 或 -</p>
           </div>
 
           <div class="account-divider"></div>
 
           <div class="section-head compact">
             <div>
-              <h3>Login</h3>
-              <p class="meta">Already registered? Sign in here.</p>
+              <h3>登录</h3>
+              <p class="meta">已有账号？在这里登录。</p>
             </div>
           </div>
           <div class="account-form">
-            <label for="loginAccountInput">Username</label>
-            <input id="loginAccountInput" class="user-input" type="text" value="" placeholder="Username" />
-            <label for="loginPasswordInput">Password</label>
+            <label for="loginAccountInput">用户名</label>
+            <input id="loginAccountInput" class="user-input" type="text" value="" placeholder="请输入用户名" />
+            <label for="loginPasswordInput">密码</label>
             <input
               id="loginPasswordInput"
               class="user-input"
               type="password"
               value=""
-              placeholder="Password"
+              placeholder="请输入密码"
               autocomplete="current-password"
             />
-            <button id="loginButton" class="secondary-btn">Login</button>
+            <button id="loginButton" class="secondary-btn">登录</button>
           </div>
         </div>
 
         <div id="accountRegisteredPanel" class="account-panel-view" hidden>
           <div class="section-head">
             <div>
-              <h3>Account</h3>
-              <p class="account-summary">Logged in as <strong id="accountDisplayName">-</strong></p>
-              <p class="meta">Plan: <strong id="accountPlanText">Free</strong></p>
+              <h3>账号信息</h3>
+              <p class="account-summary">当前账号 <strong id="accountDisplayName">-</strong></p>
+              <p class="meta">当前套餐：<strong id="accountPlanText">基础版</strong></p>
             </div>
           </div>
-          <button id="accountLogoutButton" class="secondary-btn">Logout</button>
+          <button id="accountLogoutButton" class="secondary-btn">退出登录</button>
         </div>
       </section>
     </div>

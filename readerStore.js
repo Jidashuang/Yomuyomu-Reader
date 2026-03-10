@@ -17,12 +17,16 @@ export const DEFAULT_SYNC = {
   accountToken: "",
   anonymousId: "",
   registeredAt: 0,
+  lastCloudSyncAt: 0,
+  lastCloudSyncAction: "",
+  lastCloudSyncStatus: "",
+  lastCloudSyncMessage: "",
 };
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 
 export const SAMPLE_BOOK = {
-  title: "Sample Novel",
+  title: "示例小说",
   format: "txt",
   chapters: [
     {
@@ -161,7 +165,7 @@ export const DEFAULT_BILLING = {
 };
 
 export const PRO_FEATURE_HINT = "Pro：已解锁高级导入、云同步和全量导出。";
-export const FREE_FEATURE_HINT = "Free：仅 TXT 导入，云同步与全量导出需升级。";
+export const FREE_FEATURE_HINT = "基础版：仅支持 TXT 导入，云同步与全量导出需升级。";
 
 export function loadJSON(key, fallback) {
   try {
@@ -197,7 +201,7 @@ export const state = {
   billingOrder: loadJSON(STORAGE_KEYS.billingOrder, {
     orderId: "",
     status: "",
-    channel: "stripe",
+    channel: "wechat",
     interval: "monthly",
     paidAt: 0,
   }),
@@ -278,6 +282,11 @@ export const els = {
   userIdInput: document.getElementById("userIdInput"),
   pullSyncBtn: document.getElementById("pullSyncBtn"),
   pushSyncBtn: document.getElementById("pushSyncBtn"),
+  cloudSyncSummary: document.getElementById("cloudSyncSummary"),
+  cloudSyncStatus: document.getElementById("cloudSyncStatus"),
+  cloudSyncUpdatedAt: document.getElementById("cloudSyncUpdatedAt"),
+  cloudPullActionBtn: document.getElementById("cloudPullActionBtn"),
+  cloudPushActionBtn: document.getElementById("cloudPushActionBtn"),
   planCard: document.getElementById("planCard"),
   planLiteBlock: document.getElementById("planLiteBlock"),
   planFullBlock: document.getElementById("planFullBlock"),

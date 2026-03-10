@@ -128,7 +128,7 @@ h1 {
   grid-template-columns: auto 1fr auto;
   gap: 1rem 1.5rem;
   align-items: center;
-  max-width: 1440px;
+  max-width: 1600px;
   margin: 0 auto;
   padding: 1.4rem clamp(1rem, 3vw, 2.2rem) 1rem;
 }
@@ -555,6 +555,15 @@ textarea {
   padding: 0.66rem 0.72rem 0.76rem;
 }
 
+.cloud-sync-panel .lookup-actions {
+  margin-top: 0.18rem;
+}
+
+.cloud-sync-panel .lookup-actions button {
+  flex: 1;
+  min-width: 120px;
+}
+
 .card {
   padding: 0.95rem;
 }
@@ -580,7 +589,7 @@ textarea {
   padding: 0;
   display: grid;
   gap: 0.42rem;
-  max-height: 22vh;
+  max-height: 24vh;
   overflow-y: auto;
 }
 
@@ -651,14 +660,14 @@ textarea {
 }
 
 .reader-panel {
-  min-height: 78vh;
+  min-height: 84vh;
   overflow: hidden;
   display: flex;
   flex-direction: column;
 }
 
 .focus-mode .reader-layout {
-  grid-template-columns: minmax(0, 760px);
+  grid-template-columns: minmax(0, 960px);
   justify-content: center;
 }
 
@@ -782,11 +791,12 @@ textarea {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  max-height: calc(88vh - 170px);
+  max-height: none;
+  min-height: clamp(420px, calc(100vh - 285px), 980px);
 }
 
 .reader-content {
-  width: min(100%, 72ch);
+  width: min(100%, 78ch);
   margin: 0 auto;
   padding: 1.55rem 1.1rem 2rem;
   font-family: "Zen Old Mincho", serif;
@@ -1058,7 +1068,7 @@ input[type="range"] {
 
 @media (max-width: 1280px) {
   .reader-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: 220px minmax(0, 1fr);
   }
 
   .left-panel,
@@ -1069,16 +1079,17 @@ input[type="range"] {
   }
 
   .reader-panel.reader-column {
-    min-height: 56vh;
+    min-height: 62vh;
     max-width: none;
   }
 
   .reader-viewport {
-    max-height: 56vh;
+    max-height: none;
+    min-height: 52vh;
   }
 
   .reader-content {
-    font-size: 20px;
+    font-size: 19px;
   }
 
   .simple-list,
@@ -1215,7 +1226,7 @@ input[type="range"] {
   gap: 12px;
   flex-wrap: wrap;
   margin: 20px auto;
-  max-width: 1400px;
+  max-width: 1560px;
   padding: 0 clamp(1rem, 3vw, 2.2rem);
 }
 
@@ -1225,17 +1236,18 @@ input[type="range"] {
 
 .reader-layout {
   display: grid;
-  grid-template-columns: 240px minmax(680px, 760px) 320px;
-  gap: 24px;
-  max-width: 1440px;
+  grid-template-columns: 220px minmax(0, 1.5fr) minmax(280px, 0.95fr);
+  gap: 20px;
+  max-width: 1600px;
   margin: 0 auto;
   align-items: start;
+  min-height: calc(100vh - 110px);
 }
 
 .reader-column {
   width: 100%;
-  max-width: 760px;
-  justify-self: center;
+  max-width: none;
+  justify-self: stretch;
   font-size: 18px;
   line-height: 1.9;
 }
@@ -1246,15 +1258,15 @@ input[type="range"] {
 }
 
 .reader-panel.reader-column {
-  min-height: 82vh;
+  min-height: calc(100vh - 150px);
   overflow: hidden;
   background: rgba(255, 251, 244, 0.96);
 }
 
 .sidebar {
-  width: 320px;
+  width: min(100%, 340px);
   max-width: 100%;
-  justify-self: end;
+  justify-self: stretch;
   overflow: visible;
 }
 
@@ -1386,7 +1398,7 @@ body.modal-open {
 
 @media (max-width: 1360px) {
   .reader-layout {
-    grid-template-columns: 240px minmax(0, 1fr);
+    grid-template-columns: 220px minmax(0, 1fr);
   }
 
   .reader-column {
@@ -1439,7 +1451,8 @@ body.modal-open {
   }
 
   .reader-viewport {
-    max-height: 58vh;
+    max-height: none;
+    min-height: 48vh;
   }
 
   .reader-content {

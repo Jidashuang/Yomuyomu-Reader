@@ -22,7 +22,7 @@ async function bootWithUser(page, userId) {
 
 async function openAccountModal(page) {
   await page.locator("#accountMenu > summary").click();
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.getByRole("button", { name: "登录" }).click();
   await expect(page.locator("#accountModal")).toBeVisible();
 }
 
@@ -39,7 +39,7 @@ async function registerAccount(page, userId) {
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }, "alpha-pass-123");
-  await registerForm.getByRole("button", { name: "Register" }).click();
+  await registerForm.getByRole("button", { name: "注册" }).click();
   await expect(page.locator("#accountModeLabel")).toContainText(userId);
 }
 
@@ -52,7 +52,7 @@ async function loginAccount(page, userId) {
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }, "alpha-pass-123");
-  await loginForm.getByRole("button", { name: "Login" }).click();
+  await loginForm.getByRole("button", { name: "登录" }).click();
   await expect(page.locator("#accountModeLabel")).toContainText(userId);
 }
 
@@ -154,9 +154,8 @@ test("free users are blocked on the sixth uncached explain", async ({ page }) =>
   await expect(page.getByTestId("explain-status")).not.toContainText("AI 正在解释句子...");
   const firstExplainStatus = (await page.getByTestId("explain-status").textContent()) || "";
   const unavailableHints = [
-    "AI explanation will be available soon.",
-    "AI explanation is not available yet.",
-    "AI explanation failed. Please try again later.",
+    "AI 解释功能暂未配置。",
+    "AI 解释服务暂时不可用，请稍后再试。",
   ];
   if (unavailableHints.some((hint) => firstExplainStatus.includes(hint))) {
     return;
@@ -182,12 +181,12 @@ test("sync failure only shows toast and preserves local vocab after reload", asy
   await page.getByTestId("add-vocab-btn").click();
 
   await page.locator("#accountMenu > summary").click();
-  await page.getByRole("button", { name: "Cloud Push" }).click();
+  await page.getByRole("button", { name: "云端上传" }).click();
   await expect(page.locator("#appToast")).toContainText("云同步仅对 Pro 套餐开放");
 
   await page.reload();
   await expect(page.locator("#chapterTitle")).toContainText("第一章 春の駅");
-  await openToolsTab(page, "Vocab");
+  await openToolsTab(page, "生词");
   await expect(page.getByTestId("vocab-list")).toContainText(addedWord);
 });
 
@@ -198,7 +197,7 @@ test("logout returns to guest mode and login restores the registered account", a
   await registerAccount(page, username);
   await page.locator("#accountMenu > summary").click();
   await page.locator("#logoutButton").click();
-  await expect(page.locator("#accountModeLabel")).toContainText("Guest mode");
+  await expect(page.locator("#accountModeLabel")).toContainText("游客模式");
 
   await loginAccount(page, username);
   await expect(page.locator("#accountModeLabel")).toContainText(username);
