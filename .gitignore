@@ -1,19 +1,39 @@
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Node / frontend artifacts
+node_modules/
+playwright-report/
+playwright/.cache/
+test-results/
+
+# Python caches and coverage
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local databases and generated data
+*.sqlite3
 backend/data/*.db
 backend/data/JMdict_e
 backend/data/JMdict_e.gz
 backend/data/jlpt_levels.json
 backend/data/cloud/*.json
 backend/data/*.log
-__pycache__/
-*.pyc
-.env
-.env.local
-.DS_Store
 backend/data/backups/
 backend/data/billing_orders.json
 backend/data/import_jobs/
+
+# Local payment keys
 backend/keys/*.pem
 backend/keys/*.key
-node_modules/
-playwright-report/
-test-results/

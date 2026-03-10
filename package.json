@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "python3 backend/server.py --host 127.0.0.1 --port 8000",
     "start": "python3 backend/server.py --host 127.0.0.1 --port 8000",
+    "test": "npm run test:backend && npm run test:e2e",
     "test:backend": "python3 -m unittest discover -s tests/backend -p 'test_*.py'",
     "test:e2e": "playwright test"
   },
