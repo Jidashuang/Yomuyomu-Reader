@@ -15,7 +15,7 @@ YomuYomu 是一个面向日语原著阅读学习的 Web 阅读器 MVP/Beta。项
 - 难度辅助：JLPT 级别标注、难词速览、词频统计
 - 学习记录：生词本、批注、书签、基础复习能力
 - 账户与同步：基础账号流程、阅读数据同步接口
-- 订阅基础：Free/Pro 功能门禁、Stripe/微信/支付宝接口初步接入
+- 订阅基础：Free/Pro 功能门禁、Stripe/微信/支付宝订单闭环（开发可手动确认，生产需官方网关）
 
 ## 技术栈
 - 前端：Vanilla JavaScript + HTML + CSS
@@ -46,6 +46,10 @@ npm run dev
 ```
 
 5. 打开浏览器访问：`http://127.0.0.1:8000`
+
+支付联调提示：
+- 本地开发可通过 `BILLING_ALLOW_MANUAL_PAYMENT_CONFIRM=1` 验证“下单 -> 查单 -> 确认到账 -> 套餐生效”闭环。
+- 生产环境请配置微信/支付宝官方参数并关闭手动确认（`BILLING_ALLOW_MANUAL_PAYMENT_CONFIRM=0`）。
 
 ## 运行测试
 ```bash

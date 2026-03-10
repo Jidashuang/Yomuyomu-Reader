@@ -321,12 +321,7 @@ def any_payment_channel_enabled() -> bool:
 
 
 def pay_entry_url(channel: str) -> str:
-    normalized = normalize_pay_channel(channel)
-    if normalized == PAY_CHANNEL_WECHAT:
-        return WECHAT_PAY_ENTRY_URL
-    if normalized == PAY_CHANNEL_ALIPAY:
-        return ALIPAY_PAY_ENTRY_URL
-    return ""
+    return settings.pay_entry_url(channel)
 
 
 def normalize_stripe_interval(value: str | None) -> str:
@@ -3018,6 +3013,16 @@ class ApiHandler(SimpleHTTPRequestHandler):
             },
         )
 
+    @staticmethod
+    def _sanitize_order_for_response(order: dict | None) -> dict:
+        source = dict(order or {})
+        pay_url = str(source.get("payUrl", "") or "").strip()
+        if pay_url and (
+            not is_abs_http_url(pay_url) or settings.is_placeholder_pay_entry_url(pay_url)
+        ):
+            source["payUrl"] = ""
+        return source
+
     def handle_billing_create_order(self) -> None:
         payload = self.read_json_body()
         if payload is None:
@@ -3072,7 +3077,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
             plan=PRO_PLAN,
         )
         pay_url = ""
-        payment_mode = "fallback"
+        payment_mode = "manual_confirm"
         if channel == PAY_CHANNEL_WECHAT:
             pay_url = self._create_wechat_official_pay_url(order)
         elif channel == PAY_CHANNEL_ALIPAY:
@@ -3081,21 +3086,44 @@ class ApiHandler(SimpleHTTPRequestHandler):
             payment_mode = "official"
         if not pay_url:
             template = pay_entry_url(channel)
-            pay_url = build_pay_url(
-                template,
-                order_id=order["orderId"],
-                user_id=user_id,
-                channel=channel,
-            )
+            if template:
+                pay_url = build_pay_url(
+                    template,
+                    order_id=order["orderId"],
+                    user_id=user_id,
+                    channel=channel,
+                )
+                if pay_url:
+                    payment_mode = "entry_url"
+        if not pay_url and not BILLING_ALLOW_MANUAL_PAYMENT_CONFIRM:
+            payment_mode = "unconfigured"
         if pay_url:
             order = self.order_store.set_pay_url(order["orderId"], pay_url) or order
+        order_response = self._sanitize_order_for_response(order)
+        order_status_path = (
+            f"/api/billing/order-status?orderId={quote_plus(order['orderId'])}"
+            f"&userId={quote_plus(user_id)}"
+        )
+        if payment_mode == "official":
+            verification_hint = "支付完成后可点击“确认已支付/刷新支付状态”，前端会查询订单并同步套餐状态。"
+        elif payment_mode == "entry_url":
+            verification_hint = "支付页回调成功后，点击“确认已支付/刷新支付状态”同步套餐状态。"
+        elif payment_mode == "manual_confirm":
+            verification_hint = (
+                "当前为开发/演示模式：未配置真实网关。完成模拟支付后，可点击“确认已支付”调用 confirm-paid 接口。"
+            )
+        else:
+            verification_hint = "当前支付渠道尚未配置，请联系管理员完成支付网关接入。"
         json_response(
             self,
             200,
             {
                 "ok": True,
-                "order": order,
+                "order": order_response,
                 "paymentMode": payment_mode,
+                "orderStatusPath": order_status_path,
+                "verificationHint": verification_hint,
+                "manualConfirmEnabled": BILLING_ALLOW_MANUAL_PAYMENT_CONFIRM,
                 "billing": self.billing_payload(user_id),
             },
         )
@@ -3387,6 +3415,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
             return
         if order["status"] == "paid":
             self._sync_plan_from_paid_order(order)
+        order = self._sanitize_order_for_response(order)
         json_response(
             self,
             200,
@@ -3439,6 +3468,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
             return
         self._track_payment_success(order)
         billing = self._sync_plan_from_paid_order(order)
+        order = self._sanitize_order_for_response(order)
         json_response(
             self,
             200,

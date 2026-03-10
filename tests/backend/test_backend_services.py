@@ -260,6 +260,41 @@ class BackendServiceTests(unittest.TestCase):
         self.assertEqual(downgraded["plan"], settings.FREE_PLAN)
         self.assertEqual(downgraded["accessState"], "downgraded")
 
+    def test_placeholder_pay_entry_url_is_rejected(self) -> None:
+        with mock.patch.multiple(
+            settings,
+            STRIPE_PAY_ENABLED=False,
+            WECHAT_PAY_ENABLED=True,
+            ALIPAY_PAY_ENABLED=False,
+            WECHAT_PAY_ENTRY_URL="https://your-wechat-pay-page.example.com/pay?oid={orderId}",
+            WECHAT_APP_ID="",
+            WECHAT_MCH_ID="",
+            WECHAT_MCH_SERIAL="",
+            WECHAT_MCH_PRIVATE_KEY="",
+            WECHAT_MCH_PRIVATE_KEY_PATH="",
+            BILLING_ALLOW_MANUAL_PAYMENT_CONFIRM=False,
+        ):
+            self.assertTrue(settings.is_placeholder_pay_entry_url(settings.WECHAT_PAY_ENTRY_URL))
+            self.assertEqual(settings.pay_entry_url(settings.PAY_CHANNEL_WECHAT), "")
+            self.assertFalse(settings.wechat_runtime_enabled())
+
+    def test_manual_confirm_can_enable_demo_channel_without_gateway(self) -> None:
+        with mock.patch.multiple(
+            settings,
+            STRIPE_PAY_ENABLED=False,
+            WECHAT_PAY_ENABLED=True,
+            ALIPAY_PAY_ENABLED=False,
+            WECHAT_PAY_ENTRY_URL="",
+            WECHAT_APP_ID="",
+            WECHAT_MCH_ID="",
+            WECHAT_MCH_SERIAL="",
+            WECHAT_MCH_PRIVATE_KEY="",
+            WECHAT_MCH_PRIVATE_KEY_PATH="",
+            BILLING_ALLOW_MANUAL_PAYMENT_CONFIRM=True,
+        ):
+            self.assertEqual(settings.pay_entry_url(settings.PAY_CHANNEL_WECHAT), "")
+            self.assertTrue(settings.wechat_runtime_enabled())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,84 +1,59 @@
 # 计费与支付
 
-## 1. 当前定位
-计费模块处于 MVP/Beta 阶段：
-- 已提供 Free/Pro 功能门禁与基础订单流。
-- 已接入 Stripe / 微信 / 支付宝相关接口。
-- 部分生产化能力（完整风控、对账自动化、企业级审计）仍需继续完善。
+## 当前实现边界
+- 项目已实现订单、状态查询、手动确认、套餐同步的完整链路。
+- 微信/支付宝官方网关为可选接入项，默认模板未内置可直接收款配置。
+- 代码会屏蔽 `.example` 占位域名，避免前端跳转到无效支付链接。
 
-## 2. 套餐模型（当前实现）
-- `Free`
-  - 高级导入关闭（仅基础导入）
-  - 云同步关闭
-  - 导出条数限制较低
-- `Pro`
-  - 高级导入开启
-  - 云同步开启
-  - 导出条数上限更高
+## 支付最小闭环（开发/演示可验证）
+1. 前端选择微信或支付宝，调用 `POST /api/billing/create-order` 创建订单。
+2. 订单信息会返回 `orderId/status/paymentMode/orderStatusPath`，前端显示当前状态与下一步操作。
+3. 使用 `GET /api/billing/order-status?orderId=...&userId=...` 查询订单状态。
+4. 开发/演示环境可通过 `POST /api/billing/confirm-paid` 手动确认到账（需开启 `BILLING_ALLOW_MANUAL_PAYMENT_CONFIRM=1`，或配置 `BILLING_NOTIFY_TOKEN`）。
+5. 订单变为 `paid` 后，后端同步 Pro 套餐；前端可通过 `GET /api/billing/plan` 验证套餐状态。
 
-说明：具体门禁以服务端返回的 `features` 为准。
+说明：系统不会自动伪造支付成功。只有官方回调成功，或你显式调用 `confirm-paid` 后，订单才会变为 `paid`。
 
-## 3. 主要 API
-- 查询套餐：`GET /api/billing/plan?userId=...`
-- 支付渠道选项：`GET /api/payment/options?userId=...`
+## 关键 API
+- 套餐查询：`GET /api/billing/plan?userId=...`
+- 支付能力：`GET /api/payment/options`
 - 创建订单：`POST /api/billing/create-order`
-- 查询订单：`GET /api/billing/order-status?orderId=...&userId=...`
-- Stripe Checkout：`POST /api/billing/create-checkout-session`
-- Stripe 回跳验单：`POST /api/billing/checkout-complete`
-- Stripe Portal：`POST /api/billing/create-portal-session`
-- Stripe Webhook：`POST /api/billing/stripe/webhook`
+- 订单状态：`GET /api/billing/order-status?orderId=...&userId=...`
+- 手动确认到账：`POST /api/billing/confirm-paid`
 - 微信通知：`POST /api/billing/wechat/notify`
 - 支付宝通知：`POST /api/billing/alipay/notify`
-- 手动确认（可选）：`POST /api/billing/confirm-paid`
-- 管理员改套餐（可选）：`POST /api/billing/set-plan`
+- Stripe Checkout：`POST /api/billing/create-checkout-session`
+- Stripe 回跳验单：`POST /api/billing/checkout-complete`
 
-## 4. Webhook 路由
-- Stripe：`/api/billing/stripe/webhook`
-- WeChat：`/api/billing/wechat/notify`
-- Alipay：`/api/billing/alipay/notify`
+## 环境变量（与当前行为一致）
+完整模板见根目录 `.env.example`。
 
-建议：
-- 开启 `BILLING_NOTIFY_TOKEN`，为转发回调增加额外校验。
-- 生产环境关闭 `BILLING_ALLOW_MANUAL_PAYMENT_CONFIRM`。
-
-## 5. 环境变量（核心）
-完整模板见仓库根目录 `.env.example`。
-
-### 5.1 基础计费
-- `PRO_PRICE_CNY`
-- `PRO_PLAN_DAYS`
-- `PAY_ORDER_EXPIRE_MINUTES`
-- `BILLING_GRACE_PERIOD_DAYS`
-
-### 5.2 支付开关
-- `STRIPE_PAY_ENABLED`
+### 支付开关
 - `WECHAT_PAY_ENABLED`
 - `ALIPAY_PAY_ENABLED`
+- `STRIPE_PAY_ENABLED`
 
-### 5.3 Stripe
-- `STRIPE_SECRET_KEY`
-- `STRIPE_PRICE_ID_MONTHLY`
-- `STRIPE_PRICE_ID_YEARLY`
-- `STRIPE_SUCCESS_URL`
-- `STRIPE_CANCEL_URL`
-- `STRIPE_PORTAL_RETURN_URL`
-- `STRIPE_WEBHOOK_SECRET`
+### 微信/支付宝跳转页（可选）
+- `WECHAT_PAY_ENTRY_URL`
+- `ALIPAY_PAY_ENTRY_URL`
 
-### 5.4 微信/支付宝官方网关
-- `WECHAT_APP_ID` / `WECHAT_MCH_ID` / `WECHAT_API_V3_KEY`
-- `WECHAT_MCH_PRIVATE_KEY_PATH` / `WECHAT_PLATFORM_PUBLIC_KEY_PATH`
-- `ALIPAY_APP_ID` / `ALIPAY_GATEWAY`
-- `ALIPAY_PRIVATE_KEY_PATH` / `ALIPAY_PUBLIC_KEY_PATH`
+注意：
+- 留空表示不使用跳转页。
+- 使用 `.example` 占位域名会被后端判定为无效配置并忽略，不会返回给前端。
 
-### 5.5 安全与管理
-- `BILLING_NOTIFY_TOKEN`
-- `BILLING_ALLOW_MANUAL_PAYMENT_CONFIRM`
-- `BILLING_ALLOW_MANUAL_PLAN_CHANGE`
-- `BILLING_ADMIN_TOKEN`
-- `ADMIN_TOKEN`
+### 开发/演示验证
+- `BILLING_ALLOW_MANUAL_PAYMENT_CONFIRM=1`：允许手动 `confirm-paid`，便于联调闭环。
 
-## 6. 本地联调建议
-1. `cp .env.example .env`
-2. 先只开启一个支付渠道进行调试。
-3. 用测试密钥和测试 webhook 地址完成闭环。
-4. 通过 `GET /api/health` 和订单状态接口验证配置是否生效。
+### 生产安全建议
+- `BILLING_ALLOW_MANUAL_PAYMENT_CONFIRM=0`
+- 配置 `BILLING_NOTIFY_TOKEN`
+- 完成微信/支付宝官方网关参数配置：
+  - 微信：`WECHAT_APP_ID` / `WECHAT_MCH_ID` / `WECHAT_MCH_SERIAL` / `WECHAT_MCH_PRIVATE_KEY_PATH` / `WECHAT_API_V3_KEY` / `WECHAT_NOTIFY_URL`
+  - 支付宝：`ALIPAY_APP_ID` / `ALIPAY_PRIVATE_KEY_PATH` / `ALIPAY_PUBLIC_KEY_PATH` / `ALIPAY_NOTIFY_URL` / `ALIPAY_RETURN_URL`
+
+## 生产接入清单（微信/支付宝）
+1. 配置官方商户参数与密钥文件路径。
+2. 打开对应渠道开关（`WECHAT_PAY_ENABLED=1` 或 `ALIPAY_PAY_ENABLED=1`）。
+3. 配置公网可访问的 `notify` 回调地址。
+4. 联调回调签名与订单状态落库。
+5. 关闭手动确认开关，使用官方回调作为唯一到账来源。

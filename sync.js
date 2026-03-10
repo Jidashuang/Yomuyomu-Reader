@@ -33,6 +33,17 @@ export function createSyncModule(deps) {
       deps.updateBillingOrder({
         orderId: "",
         status: "",
+        paymentMode: "",
+        payUrl: "",
+        amountFen: 0,
+        createdAt: 0,
+        updatedAt: 0,
+        expiresAt: 0,
+        paidSource: "",
+        externalTradeNo: "",
+        orderStatusPath: "",
+        verificationHint: "",
+        manualConfirmEnabled: false,
         sessionId: "",
         paidAt: 0,
       });

@@ -203,6 +203,16 @@ test("logout returns to guest mode and login restores the registered account", a
   await expect(page.locator("#accountModeLabel")).toContainText(username);
 });
 
+test("account modal shows password rule and forgot-password fallback", async ({ page }) => {
+  await bootWithUser(page, makeUser("auth-ui"));
+  await openAccountModal(page);
+
+  await expect(page.locator("#accountGuestPanel")).toContainText("密码规则：至少 8 位字符");
+
+  await page.getByRole("button", { name: "忘记密码？" }).click();
+  await expect(page.locator("#statusText")).toContainText("重置密码功能即将开放");
+});
+
 test("duplicate imports reuse the same analyzed book", async ({ page }) => {
   await bootWithUser(page, makeUser("dupe"));
   await registerAccount(page, makeUser("acct"));

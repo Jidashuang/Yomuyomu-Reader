@@ -535,6 +535,7 @@
           <div class="account-form">
             <label for="registerAccountInput">用户名</label>
             <input id="registerAccountInput" class="user-input" type="text" value="" placeholder="请输入用户名" />
+            <p class="meta account-rule">用户名规则：3–32 位，仅支持小写字母、数字、_ 或 -。</p>
             <label for="registerPasswordInput">密码</label>
             <input
               id="registerPasswordInput"
@@ -544,8 +545,8 @@
               placeholder="请输入密码"
               autocomplete="new-password"
             />
+            <p class="meta account-rule">密码规则：至少 8 位字符（与后端校验一致）。</p>
             <button id="registerAccountButton" class="secondary-btn">注册</button>
-            <p class="meta">用户名需 3–32 位，仅支持小写字母、数字、_ 或 -</p>
           </div>
 
           <div class="account-divider"></div>
@@ -569,6 +570,7 @@
               autocomplete="current-password"
             />
             <button id="loginButton" class="secondary-btn">登录</button>
+            <button id="forgotPasswordBtn" class="account-link-btn" type="button">忘记密码？</button>
           </div>
         </div>
 

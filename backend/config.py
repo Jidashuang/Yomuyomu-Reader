@@ -117,6 +117,11 @@ PRO_PRICE_FEN = int(float(os.getenv("PRO_PRICE_CNY", "39")) * 100)
 PRO_PLAN_DAYS = max(1, int(os.getenv("PRO_PLAN_DAYS", "31")))
 ORDER_EXPIRE_MINUTES = max(5, int(os.getenv("PAY_ORDER_EXPIRE_MINUTES", "30")))
 BILLING_GRACE_PERIOD_DAYS = max(1, int(os.getenv("BILLING_GRACE_PERIOD_DAYS", "3") or 3))
+PLACEHOLDER_PAY_ENTRY_HOSTS = {
+    "your-domain.com",
+    "your-wechat-pay-page.example.com",
+    "your-alipay-pay-page.example.com",
+}
 
 AI_EXPLAIN_ENABLED = os.getenv("AI_EXPLAIN_ENABLED", "0").strip() == "1"
 AI_EXPLAIN_PROVIDER = os.getenv("AI_EXPLAIN_PROVIDER", "openai").strip().lower() or "openai"
@@ -274,36 +279,60 @@ def stripe_payment_link_enabled() -> bool:
     return bool(STRIPE_PAY_ENABLED and is_abs_http_url(STRIPE_PAYMENT_LINK_MONTHLY))
 
 
+def is_placeholder_pay_entry_url(value: str | None) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    parsed = urlparse(raw)
+    host = str(parsed.netloc or "").split("@")[-1].split(":")[0].strip().lower()
+    if not host:
+        return False
+    if host in PLACEHOLDER_PAY_ENTRY_HOSTS:
+        return True
+    return host.endswith(".example.com") or host.endswith(".example.org") or host.endswith(".example.net")
+
+
+def sanitize_pay_entry_url(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not is_abs_http_url(raw):
+        return ""
+    if is_placeholder_pay_entry_url(raw):
+        return ""
+    return raw
+
+
 def wechat_runtime_enabled() -> bool:
     if not payment_enabled():
         return False
+    has_entry_url = bool(sanitize_pay_entry_url(WECHAT_PAY_ENTRY_URL))
+    has_official_gateway = bool(
+        WECHAT_APP_ID
+        and WECHAT_MCH_ID
+        and WECHAT_MCH_SERIAL
+        and (WECHAT_MCH_PRIVATE_KEY or WECHAT_MCH_PRIVATE_KEY_PATH)
+    )
+    # For local/demo verification we allow creating orders without gateway redirect.
+    has_manual_demo_fallback = bool(BILLING_ALLOW_MANUAL_PAYMENT_CONFIRM)
     return bool(
         WECHAT_PAY_ENABLED
-        and (
-            WECHAT_PAY_ENTRY_URL
-            or (
-                WECHAT_APP_ID
-                and WECHAT_MCH_ID
-                and WECHAT_MCH_SERIAL
-                and (WECHAT_MCH_PRIVATE_KEY or WECHAT_MCH_PRIVATE_KEY_PATH)
-            )
-        )
+        and (has_entry_url or has_official_gateway or has_manual_demo_fallback)
     )
 
 
 def alipay_runtime_enabled() -> bool:
     if not payment_enabled():
         return False
+    has_entry_url = bool(sanitize_pay_entry_url(ALIPAY_PAY_ENTRY_URL))
+    has_official_gateway = bool(
+        ALIPAY_APP_ID
+        and ALIPAY_GATEWAY
+        and (ALIPAY_PRIVATE_KEY or ALIPAY_PRIVATE_KEY_PATH)
+    )
+    # For local/demo verification we allow creating orders without gateway redirect.
+    has_manual_demo_fallback = bool(BILLING_ALLOW_MANUAL_PAYMENT_CONFIRM)
     return bool(
         ALIPAY_PAY_ENABLED
-        and (
-            ALIPAY_PAY_ENTRY_URL
-            or (
-                ALIPAY_APP_ID
-                and ALIPAY_GATEWAY
-                and (ALIPAY_PRIVATE_KEY or ALIPAY_PRIVATE_KEY_PATH)
-            )
-        )
+        and (has_entry_url or has_official_gateway or has_manual_demo_fallback)
     )
 
 
@@ -322,9 +351,9 @@ def any_payment_channel_enabled() -> bool:
 def pay_entry_url(channel: str) -> str:
     normalized = normalize_pay_channel(channel)
     if normalized == PAY_CHANNEL_WECHAT:
-        return WECHAT_PAY_ENTRY_URL
+        return sanitize_pay_entry_url(WECHAT_PAY_ENTRY_URL)
     if normalized == PAY_CHANNEL_ALIPAY:
-        return ALIPAY_PAY_ENTRY_URL
+        return sanitize_pay_entry_url(ALIPAY_PAY_ENTRY_URL)
     return ""
 
 

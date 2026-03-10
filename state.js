@@ -114,6 +114,12 @@ export function normalizeBilling(raw) {
       ? source.paymentChannels
       : {}),
   };
+  const mergedOfficialGateway = {
+    ...DEFAULT_BILLING.officialGateway,
+    ...(source.officialGateway && typeof source.officialGateway === "object"
+      ? source.officialGateway
+      : {}),
+  };
   const sourceStripe = source.stripe && typeof source.stripe === "object" ? source.stripe : {};
   const mergedStripeIntervals = {
     ...DEFAULT_BILLING.stripe.intervals,
@@ -149,6 +155,11 @@ export function normalizeBilling(raw) {
       stripe: Boolean(mergedChannels.stripe),
       wechat: Boolean(mergedChannels.wechat),
       alipay: Boolean(mergedChannels.alipay),
+    },
+    officialGateway: {
+      stripe: Boolean(mergedOfficialGateway.stripe),
+      wechat: Boolean(mergedOfficialGateway.wechat),
+      alipay: Boolean(mergedOfficialGateway.alipay),
     },
     stripe: {
       checkoutReady:
@@ -199,9 +210,20 @@ export function normalizeBillingOrder(raw) {
   return {
     orderId: String(source.orderId || ""),
     status: String(source.status || ""),
-    channel: normalizePayChannel(source.channel || "stripe"),
+    channel: normalizePayChannel(source.channel || "wechat"),
     interval: normalizeBillingInterval(source.interval || "monthly"),
     sessionId: String(source.sessionId || ""),
+    paymentMode: String(source.paymentMode || ""),
+    payUrl: String(source.payUrl || ""),
+    amountFen: Math.max(0, Number(source.amountFen || 0)),
+    createdAt: Number(source.createdAt || 0),
+    updatedAt: Number(source.updatedAt || 0),
+    expiresAt: Number(source.expiresAt || 0),
+    paidSource: String(source.paidSource || ""),
+    externalTradeNo: String(source.externalTradeNo || ""),
+    orderStatusPath: String(source.orderStatusPath || ""),
+    verificationHint: String(source.verificationHint || ""),
+    manualConfirmEnabled: Boolean(source.manualConfirmEnabled),
     paidAt: Number(source.paidAt || 0),
   };
 }

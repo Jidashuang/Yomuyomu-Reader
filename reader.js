@@ -57,11 +57,12 @@ export function initApp() {
 }
 
 const REGISTER_USERNAME_RE = /^[a-z0-9_-]{3,32}$/;
+const REGISTER_PASSWORD_MIN_LENGTH = 8;
 const REGISTER_BUTTON_LABEL = "注册";
 const REGISTER_LOADING_LABEL = "注册中...";
 const REGISTER_ERROR_MESSAGES = {
   INVALID_USERNAME: "用户名不合法，请使用小写字母、数字、_ 或 -。",
-  WEAK_PASSWORD: "密码至少需要 8 位。",
+  WEAK_PASSWORD: `密码至少需要 ${REGISTER_PASSWORD_MIN_LENGTH} 位字符。`,
   USERNAME_EXISTS: "用户名已存在。",
 };
 const LOGIN_BUTTON_LABEL = "登录";
@@ -69,6 +70,12 @@ const LOGIN_LOADING_LABEL = "登录中...";
 const LOGIN_ERROR_MESSAGES = {
   INVALID_CREDENTIALS: "用户名或密码错误。",
 };
+const FORGOT_PASSWORD_PLACEHOLDER_MESSAGE = "重置密码功能即将开放，请联系管理员协助重置密码。";
+const PLACEHOLDER_PAY_HOSTS = new Set([
+  "your-domain.com",
+  "your-wechat-pay-page.example.com",
+  "your-alipay-pay-page.example.com",
+]);
 const RIGHT_PANEL_TABS = ["vocab", "notes", "more"];
 
 function createAnonymousId() {
@@ -223,6 +230,7 @@ function bindEvents() {
   els.loginButton?.addEventListener("click", () => {
     void loginAccount();
   });
+  els.forgotPasswordBtn?.addEventListener("click", onForgotPasswordClick);
   els.signInButton?.addEventListener("click", () => {
     closeAccountMenu();
     openAccountModal({ panel: "login" });
@@ -3607,6 +3615,12 @@ function normalizeBilling(raw) {
       ? source.paymentChannels
       : {}),
   };
+  const mergedOfficialGateway = {
+    ...DEFAULT_BILLING.officialGateway,
+    ...(source.officialGateway && typeof source.officialGateway === "object"
+      ? source.officialGateway
+      : {}),
+  };
   const sourceStripe = source.stripe && typeof source.stripe === "object" ? source.stripe : {};
   const mergedStripeIntervals = {
     ...DEFAULT_BILLING.stripe.intervals,
@@ -3644,6 +3658,11 @@ function normalizeBilling(raw) {
       stripe: Boolean(mergedChannels.stripe),
       wechat: Boolean(mergedChannels.wechat),
       alipay: Boolean(mergedChannels.alipay),
+    },
+    officialGateway: {
+      stripe: Boolean(mergedOfficialGateway.stripe),
+      wechat: Boolean(mergedOfficialGateway.wechat),
+      alipay: Boolean(mergedOfficialGateway.alipay),
     },
     stripe: {
       checkoutReady:
@@ -3700,6 +3719,17 @@ function normalizeBillingOrder(raw) {
     channel: normalizePayChannel(source.channel || "wechat"),
     interval: normalizeBillingInterval(source.interval || "monthly"),
     sessionId: String(source.sessionId || ""),
+    paymentMode: String(source.paymentMode || ""),
+    payUrl: String(source.payUrl || ""),
+    amountFen: Math.max(0, Number(source.amountFen || 0)),
+    createdAt: Number(source.createdAt || 0),
+    updatedAt: Number(source.updatedAt || 0),
+    expiresAt: Number(source.expiresAt || 0),
+    paidSource: String(source.paidSource || ""),
+    externalTradeNo: String(source.externalTradeNo || ""),
+    orderStatusPath: String(source.orderStatusPath || ""),
+    verificationHint: String(source.verificationHint || ""),
+    manualConfirmEnabled: Boolean(source.manualConfirmEnabled),
     paidAt: Number(source.paidAt || 0),
   };
 }
@@ -3754,6 +3784,96 @@ function paymentChannelLabel(channel) {
   if (key === "stripe") return "Stripe（国际卡）";
   if (key === "alipay") return "支付宝";
   return "微信支付";
+}
+
+function orderStatusLabel(status) {
+  const key = String(status || "").trim().toLowerCase();
+  if (key === "paid") return "已支付";
+  if (key === "pending") return "待支付";
+  if (key === "expired") return "已过期";
+  if (!key) return "未创建";
+  return key;
+}
+
+function formatBillingDateTime(timestampMs) {
+  const raw = Number(timestampMs || 0);
+  if (!Number.isFinite(raw) || raw <= 0) return "";
+  try {
+    return new Date(raw).toLocaleString("zh-CN", { hour12: false });
+  } catch {
+    return "";
+  }
+}
+
+function isPlaceholderPayUrl(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return false;
+  try {
+    const parsed = new URL(raw, window.location.origin);
+    const host = String(parsed.hostname || "").toLowerCase();
+    if (!host) return false;
+    if (PLACEHOLDER_PAY_HOSTS.has(host)) return true;
+    return host.endsWith(".example.com") || host.endsWith(".example.org") || host.endsWith(".example.net");
+  } catch {
+    return false;
+  }
+}
+
+function legacyBillingFlowHint(channel) {
+  const order = state.billingOrder || {};
+  const orderId = String(order.orderId || "").trim();
+  const status = String(order.status || "").trim().toLowerCase();
+  const paymentMode = String(order.paymentMode || "").trim().toLowerCase();
+  const channelLabel = paymentChannelLabel(channel);
+  const statusText = orderStatusLabel(status);
+  const expiresAtText = formatBillingDateTime(order.expiresAt);
+  const hasSafePayUrl = Boolean(order.payUrl) && !isPlaceholderPayUrl(order.payUrl);
+  const verificationHint = String(order.verificationHint || "").trim();
+  const orderStatusPath =
+    String(order.orderStatusPath || "").trim() ||
+    (orderId
+      ? `/api/billing/order-status?orderId=${encodeURIComponent(orderId)}&userId=${encodeURIComponent(
+          state.sync.userId || ""
+        )}`
+      : "");
+  const manualConfirmEnabled = Boolean(
+    state.billing.manualPaymentConfirmEnabled || order.manualConfirmEnabled
+  );
+  const lines = [];
+  if (!orderId) {
+    lines.push(`请先创建${channelLabel}订单。`);
+    if (manualConfirmEnabled) {
+      lines.push("开发/演示环境可在创建订单后点击“确认已支付”走模拟到账。");
+    }
+    return lines.join(" ");
+  }
+  lines.push(`订单 ${orderId}，当前状态：${statusText}。`);
+  if (status === "paid") {
+    lines.push("支付已确认，Pro 套餐应已生效。");
+    return lines.join(" ");
+  }
+  if (hasSafePayUrl) {
+    lines.push("已生成支付链接，请在新窗口完成支付。");
+  } else if (paymentMode === "manual_confirm" || manualConfirmEnabled) {
+    lines.push("当前为开发/演示模式，未配置真实支付跳转链接。");
+  } else {
+    lines.push("当前支付渠道尚未配置完整，暂无法跳转支付页。");
+  }
+  if (verificationHint) {
+    lines.push(verificationHint);
+  }
+  if (expiresAtText && status === "pending") {
+    lines.push(`订单有效期至 ${expiresAtText}。`);
+  }
+  if (orderStatusPath) {
+    lines.push(`可用 ${orderStatusPath} 查询最新状态。`);
+  }
+  if (manualConfirmEnabled) {
+    lines.push("确认到账后可点击“确认已支付”调用 confirm-paid 开通套餐。");
+  } else {
+    lines.push("支付完成后点击“刷新支付状态”同步到账结果。");
+  }
+  return lines.join(" ");
 }
 
 function renderBillingUi() {
@@ -3996,10 +4116,10 @@ function renderBillingUi() {
     const hasOrder = Boolean(state.billingOrder.orderId);
     els.manageBillingBtn.disabled = !isRegistered || !hasOrder;
     els.manageBillingBtn.textContent = state.billing.manualPaymentConfirmEnabled
-      ? "确认已支付"
+      ? "确认已支付（开发）"
       : "刷新支付状态";
     if (els.billingFlowHint) {
-      els.billingFlowHint.textContent = `${paymentChannelLabel(currentChannel)} 支付完成后，点击右侧按钮同步开通状态。`;
+      els.billingFlowHint.textContent = legacyBillingFlowHint(currentChannel);
     }
   }
   renderSyncUi();
@@ -4067,6 +4187,11 @@ function onBillingIntervalChange() {
   renderBillingUi();
 }
 
+function onForgotPasswordClick() {
+  setStatus(FORGOT_PASSWORD_PLACEHOLDER_MESSAGE);
+  showToast(FORGOT_PASSWORD_PLACEHOLDER_MESSAGE);
+}
+
 async function onRegisterAccount(options = {}) {
   const username = String(els.registerAccountInput?.value || "").trim().toLowerCase();
   const password = String(els.registerPasswordInput?.value || "");
@@ -4085,7 +4210,7 @@ async function onRegisterAccount(options = {}) {
     showToast(message, true);
     return false;
   }
-  if (password.length < 8) {
+  if (password.length < REGISTER_PASSWORD_MIN_LENGTH) {
     const message = REGISTER_ERROR_MESSAGES.WEAK_PASSWORD;
     setStatus(message, true);
     showToast(message, true);
@@ -4336,22 +4461,55 @@ async function onUpgradeProPlanByLegacyChannel(channel) {
       updateBilling(payload.billing);
     }
     if (payload?.order) {
-      updateBillingOrder(payload.order);
+      const orderId = String(payload.order.orderId || "").trim();
+      updateBillingOrder({
+        ...payload.order,
+        paymentMode: String(payload.paymentMode || ""),
+        orderStatusPath:
+          String(payload.orderStatusPath || "").trim() ||
+          (orderId
+            ? `/api/billing/order-status?orderId=${encodeURIComponent(orderId)}&userId=${encodeURIComponent(
+                state.sync.userId || ""
+              )}`
+            : ""),
+        verificationHint: String(payload.verificationHint || ""),
+        manualConfirmEnabled: Boolean(payload.manualConfirmEnabled),
+      });
       if (payload.order.orderId) {
-        const paymentMode = String(payload.paymentMode || "").toLowerCase() === "official"
-          ? "官方网关"
-          : "支付页";
+        const mode = String(payload.paymentMode || "").trim().toLowerCase();
+        const modeLabel =
+          mode === "official"
+            ? "官方网关"
+            : mode === "entry_url"
+            ? "支付页链接"
+            : mode === "manual_confirm"
+            ? "开发/演示模式"
+            : "未配置";
+        const hint = String(payload.verificationHint || "").trim();
         setStatus(
-          `订单已创建：${payload.order.orderId}，请完成${channel === "wechat" ? "微信" : "支付宝"}支付（${paymentMode}）。`
+          `订单已创建：${payload.order.orderId}（${modeLabel}）。${hint || "请完成支付后再确认到账。"}`
         );
       }
     }
     const payUrl = String(payload?.order?.payUrl || "").trim();
-    if (payUrl) {
+    if (payUrl && !isPlaceholderPayUrl(payUrl)) {
       window.open(payUrl, "_blank", "noopener,noreferrer");
-    } else {
-      setStatus("未配置支付跳转链接。支付完成后点击“确认已支付”。", true);
+      return;
     }
+    if (payUrl && isPlaceholderPayUrl(payUrl)) {
+      const message = "检测到占位支付链接，已阻止跳转。请改为配置真实网关或使用开发/演示确认流程。";
+      setStatus(message, true);
+      showToast(message, true);
+      return;
+    }
+    const manualConfirmEnabled = Boolean(
+      payload?.manualConfirmEnabled || state.billing.manualPaymentConfirmEnabled
+    );
+    if (manualConfirmEnabled) {
+      setStatus("未配置可跳转支付页。开发/演示环境可在确认到账后点击“确认已支付”。");
+      return;
+    }
+    setStatus("当前支付渠道尚未配置可用支付页，请联系管理员。", true);
   } catch (error) {
     if (error?.payload?.billing) {
       updateBilling(error.payload.billing);
@@ -4402,7 +4560,7 @@ async function onOpenStripeBillingPortal() {
 
 async function onOpenLegacyBillingPortal() {
   if (!state.billingOrder.orderId) {
-    setStatus("请先创建支付订单。", true);
+    setStatus("请先创建支付订单，再确认支付状态。", true);
     return;
   }
   try {
@@ -4424,10 +4582,12 @@ async function onOpenLegacyBillingPortal() {
       return;
     }
     if (!state.billing.manualPaymentConfirmEnabled) {
-      setStatus("支付未完成或尚未到账，请稍后重试。");
+      const orderId = String(state.billingOrder.orderId || "").trim();
+      setStatus(`订单 ${orderId} 尚未到账，请完成支付后再点“刷新支付状态”。`);
       return;
     }
 
+    setStatus("正在执行开发/演示支付确认...");
     const confirmPayload = await fetchJson("/api/billing/confirm-paid", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
