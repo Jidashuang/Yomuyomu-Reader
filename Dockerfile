@@ -10,6 +10,15 @@ RUN python -m pip install --no-cache-dir -r /app/backend/requirements-deploy.txt
 
 COPY . /app
 
+RUN mkdir -p /bootstrap-data \
+    && for file in \
+        /app/backend/data/jmdict.db \
+        /app/backend/data/jlpt_levels.json \
+        /app/backend/data/jlpt_levels.json.example; do \
+        if [ -f "$file" ]; then cp "$file" /bootstrap-data/; fi; \
+    done \
+    && chmod +x /app/backend/start.sh
+
 EXPOSE 8000
 
-CMD ["python3", "backend/server.py"]
+CMD ["/app/backend/start.sh"]

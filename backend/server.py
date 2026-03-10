@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -75,8 +76,13 @@ def run_server(host: str, port: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="YomuYomu backend server")
-    parser.add_argument("--host", default="127.0.0.1", help="Bind host")
-    parser.add_argument("--port", type=int, default=8000, help="Bind port")
+    default_host = os.getenv("HOST", "0.0.0.0").strip() or "0.0.0.0"
+    try:
+        default_port = int(os.getenv("PORT", "8000") or 8000)
+    except ValueError:
+        default_port = 8000
+    parser.add_argument("--host", default=default_host, help="Bind host")
+    parser.add_argument("--port", type=int, default=default_port, help="Bind port")
     args = parser.parse_args()
     run_server(args.host, args.port)
 

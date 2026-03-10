@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>YomuYomu Admin</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="ops-body">
+    <main class="ops-shell">
+      <section class="card">
+        <div class="ops-head">
+          <div>
+            <p class="eyebrow">Admin</p>
+            <h1>Users</h1>
+            <p class="meta">Users 已接通 API；Books 和 AI usage 预留了独立区块，等待对应接口。</p>
+          </div>
+          <div class="ops-controls">
+            <input id="adminTokenInput" class="user-input" type="password" placeholder="Admin Token" />
+            <button id="adminRefreshBtn">Refresh</button>
+          </div>
+        </div>
+        <p id="adminStatus" class="meta">等待加载...</p>
+        <div class="ops-table-wrap">
+          <table class="metrics-table">
+            <thead>
+              <tr>
+                <th>User ID</th>
+                <th>Username</th>
+                <th>Created At</th>
+              </tr>
+            </thead>
+            <tbody id="adminUsersTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="ops-head">
+          <div>
+            <p class="eyebrow">Admin</p>
+            <h2>Books</h2>
+            <p class="meta">Pending API: `/api/admin/books`</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="ops-head">
+          <div>
+            <p class="eyebrow">Admin</p>
+            <h2>AI Usage</h2>
+            <p class="meta">Pending API: `/api/admin/ai-usage`</p>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="admin.js"></script>
+  </body>
+</html>
