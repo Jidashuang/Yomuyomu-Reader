@@ -364,17 +364,38 @@ def normalize_stripe_interval(value: str | None) -> str:
     return "yearly" if raw in {"yearly", "annual", "year"} else "monthly"
 
 
+def sanitize_stripe_price_id(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    normalized = raw.lower()
+    if normalized in {"price_xxx", "price_placeholder", "price_test"}:
+        return ""
+    if normalized.startswith("price_xxx"):
+        return ""
+    if not raw.startswith("price_"):
+        return ""
+    return raw
+
+
 def stripe_price_id(interval: str) -> str:
+    monthly_price_id = sanitize_stripe_price_id(STRIPE_PRICE_ID_MONTHLY)
+    yearly_price_id = sanitize_stripe_price_id(STRIPE_PRICE_ID_YEARLY)
+    fallback_price_id = sanitize_stripe_price_id(STRIPE_PRICE_ID)
     normalized = normalize_stripe_interval(interval)
     if normalized == "yearly":
-        return STRIPE_PRICE_ID_YEARLY or STRIPE_PRICE_ID or STRIPE_PRICE_ID_MONTHLY
-    return STRIPE_PRICE_ID_MONTHLY or STRIPE_PRICE_ID or STRIPE_PRICE_ID_YEARLY
+        return yearly_price_id or fallback_price_id or monthly_price_id
+    return monthly_price_id or fallback_price_id or yearly_price_id
 
 
 def stripe_checkout_enabled() -> bool:
     return bool(
         stripe_runtime_enabled()
-        and (STRIPE_PRICE_ID_MONTHLY or STRIPE_PRICE_ID_YEARLY or STRIPE_PRICE_ID)
+        and (
+            sanitize_stripe_price_id(STRIPE_PRICE_ID_MONTHLY)
+            or sanitize_stripe_price_id(STRIPE_PRICE_ID_YEARLY)
+            or sanitize_stripe_price_id(STRIPE_PRICE_ID)
+        )
     )
 
 

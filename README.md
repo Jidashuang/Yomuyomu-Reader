@@ -48,8 +48,8 @@ npm run dev
 - `STRIPE_PAY_ENABLED=1`
 - `STRIPE_PUBLISHABLE_KEY=pk_test_...`（前端公开密钥）
 - `STRIPE_SECRET_KEY=sk_test_...`
-- `STRIPE_PRICE_ID_MONTHLY=price_xxx`（Pro Monthly — $6/month）
-- `STRIPE_PRICE_ID_YEARLY=price_xxx`（Pro Yearly — $60/year）
+- `STRIPE_PRICE_ID_MONTHLY=price_1T9eA2JbnGpXlXVwu6k3xjjt`（Pro Monthly — $6/month）
+- `STRIPE_PRICE_ID_YEARLY=price_1T9eDYJbnGpXlXVwvcUaSGsG`（Pro Yearly — $60/year）
 
 2. 启动服务后，注册账号并在套餐区选择月付或年付，然后点击“订阅 Pro”。
 3. 前端会调用 `/api/billing/create-checkout-session`，并使用 `STRIPE_PUBLISHABLE_KEY` 跳转 Stripe Checkout 测试支付页。

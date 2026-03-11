@@ -336,17 +336,38 @@ def normalize_stripe_interval(value: str | None) -> str:
     return "yearly" if raw in {"yearly", "annual", "year"} else "monthly"
 
 
+def sanitize_stripe_price_id(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    normalized = raw.lower()
+    if normalized in {"price_xxx", "price_placeholder", "price_test"}:
+        return ""
+    if normalized.startswith("price_xxx"):
+        return ""
+    if not raw.startswith("price_"):
+        return ""
+    return raw
+
+
 def stripe_price_id(interval: str) -> str:
+    monthly_price_id = sanitize_stripe_price_id(STRIPE_PRICE_ID_MONTHLY)
+    yearly_price_id = sanitize_stripe_price_id(STRIPE_PRICE_ID_YEARLY)
+    fallback_price_id = sanitize_stripe_price_id(STRIPE_PRICE_ID)
     normalized = normalize_stripe_interval(interval)
     if normalized == "yearly":
-        return STRIPE_PRICE_ID_YEARLY or STRIPE_PRICE_ID or STRIPE_PRICE_ID_MONTHLY
-    return STRIPE_PRICE_ID_MONTHLY or STRIPE_PRICE_ID or STRIPE_PRICE_ID_YEARLY
+        return yearly_price_id or fallback_price_id or monthly_price_id
+    return monthly_price_id or fallback_price_id or yearly_price_id
 
 
 def stripe_checkout_enabled() -> bool:
     return bool(
         stripe_runtime_enabled()
-        and (STRIPE_PRICE_ID_MONTHLY or STRIPE_PRICE_ID_YEARLY or STRIPE_PRICE_ID)
+        and (
+            sanitize_stripe_price_id(STRIPE_PRICE_ID_MONTHLY)
+            or sanitize_stripe_price_id(STRIPE_PRICE_ID_YEARLY)
+            or sanitize_stripe_price_id(STRIPE_PRICE_ID)
+        )
     )
 
 
@@ -1552,6 +1573,8 @@ class ApiHandler(SimpleHTTPRequestHandler):
         billing["billingCycle"] = stripe_normalize_billing_cycle(billing.get("billingCycle"))
         billing["priceFen"] = PRO_PRICE_FEN
         billing["orderExpireMinutes"] = ORDER_EXPIRE_MINUTES
+        monthly_price_id = stripe_price_id("monthly")
+        yearly_price_id = stripe_price_id("yearly")
         billing["stripe"] = {
             "checkoutReady": stripe_checkout_ready,
             "portalReady": self._stripe_portal_ready(),
@@ -1564,12 +1587,12 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 else ("checkout" if stripe_checkout_ready else "none")
             ),
             "intervals": {
-                "monthly": bool(STRIPE_PRICE_ID_MONTHLY or STRIPE_PRICE_ID),
-                "yearly": bool(STRIPE_PRICE_ID_YEARLY or STRIPE_PRICE_ID),
+                "monthly": bool(monthly_price_id),
+                "yearly": bool(yearly_price_id),
             },
             "defaultInterval": (
                 "monthly"
-                if (STRIPE_PRICE_ID_MONTHLY or STRIPE_PRICE_ID or not STRIPE_PRICE_ID_YEARLY)
+                if monthly_price_id or not yearly_price_id
                 else "yearly"
             ),
             "customerId": str(billing.get("stripeCustomerId", "") or "").strip(),
@@ -1795,8 +1818,16 @@ class ApiHandler(SimpleHTTPRequestHandler):
         )
         interval_from_metadata = ""
         if isinstance(metadata, dict):
-            interval_from_metadata = stripe_normalize_billing_cycle(metadata.get("interval"))
+            interval_from_metadata = (
+                stripe_normalize_billing_cycle(metadata.get("billing_cycle"))
+                or stripe_normalize_billing_cycle(metadata.get("billingCycle"))
+                or stripe_normalize_billing_cycle(metadata.get("interval"))
+            )
         billing_cycle = interval_from_metadata or stripe_normalize_billing_cycle(
+            subscription_metadata.get("billing_cycle")
+        ) or stripe_normalize_billing_cycle(
+            subscription_metadata.get("billingCycle")
+        ) or stripe_normalize_billing_cycle(
             subscription_metadata.get("interval")
         )
         if not billing_cycle:
@@ -1931,6 +1962,8 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 "userId": user_id,
                 "plan": PRO_PLAN,
                 "interval": normalized_interval,
+                "billingCycle": normalized_interval,
+                "billing_cycle": normalized_interval,
                 "orderId": order_id,
             },
             "subscription_data": {
@@ -1938,6 +1971,8 @@ class ApiHandler(SimpleHTTPRequestHandler):
                     "userId": user_id,
                     "plan": PRO_PLAN,
                     "interval": normalized_interval,
+                    "billingCycle": normalized_interval,
+                    "billing_cycle": normalized_interval,
                     "orderId": order_id,
                 }
             },
@@ -3086,8 +3121,13 @@ class ApiHandler(SimpleHTTPRequestHandler):
             json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
             return
         user_id = sanitize_user_id(str(payload.get("userId", "default")))
-        interval = normalize_stripe_interval(payload.get("interval", "monthly"))
-        if interval == "yearly" and not (STRIPE_PRICE_ID_YEARLY or STRIPE_PRICE_ID):
+        interval = normalize_stripe_interval(
+            payload.get("interval")
+            or payload.get("billing_cycle")
+            or payload.get("billingCycle")
+            or "monthly"
+        )
+        if interval == "yearly" and not stripe_price_id("yearly"):
             json_response(
                 self,
                 400,
@@ -3098,7 +3138,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 },
             )
             return
-        if interval == "monthly" and not (STRIPE_PRICE_ID_MONTHLY or STRIPE_PRICE_ID):
+        if interval == "monthly" and not stripe_price_id("monthly"):
             json_response(
                 self,
                 400,

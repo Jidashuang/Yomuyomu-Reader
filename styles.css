@@ -666,7 +666,8 @@ textarea {
 
 .reader-panel {
   min-height: 84vh;
-  overflow: hidden;
+  overflow-x: visible;
+  overflow-y: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -718,6 +719,7 @@ textarea {
 
 .reader-settings-popover {
   position: relative;
+  z-index: 8;
 }
 
 .reader-settings-popover summary {
@@ -732,10 +734,12 @@ textarea {
 
 .reader-settings-panel {
   position: absolute;
-  right: 0;
+  left: 0;
+  right: auto;
   top: calc(100% + 0.45rem);
-  z-index: 5;
-  width: min(320px, calc(100vw - 2.2rem));
+  transform: translateX(calc(0.4rem + var(--reader-settings-shift-x, 0px)));
+  z-index: 12;
+  width: min(320px, calc(100vw - 1rem));
   display: grid;
   gap: 0.58rem;
   padding: 0.72rem;
@@ -1264,8 +1268,16 @@ input[type="range"] {
 
 .reader-panel.reader-column {
   min-height: calc(100vh - 150px);
-  overflow: hidden;
+  overflow-x: visible;
+  overflow-y: hidden;
   background: rgba(255, 251, 244, 0.96);
+}
+
+@media (max-width: 760px) {
+  .reader-settings-panel {
+    width: min(320px, calc(100vw - 0.8rem));
+    transform: translateX(var(--reader-settings-shift-x, 0px));
+  }
 }
 
 .sidebar {

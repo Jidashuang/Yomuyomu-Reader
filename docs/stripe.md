@@ -15,13 +15,13 @@ APP_BASE_URL=http://127.0.0.1:8000
 STRIPE_PAY_ENABLED=1
 STRIPE_PUBLISHABLE_KEY=pk_test_...
 STRIPE_SECRET_KEY=sk_test_...
-STRIPE_PRICE_ID_MONTHLY=price_xxx
-STRIPE_PRICE_ID_YEARLY=price_xxx
+STRIPE_PRICE_ID_MONTHLY=price_1T9eA2JbnGpXlXVwu6k3xjjt
+STRIPE_PRICE_ID_YEARLY=price_1T9eDYJbnGpXlXVwvcUaSGsG
 ```
 
 可选兼容（不推荐，仅历史 fallback）：
 ```bash
-STRIPE_PRICE_ID=price_xxx
+STRIPE_PRICE_ID=price_1T9eA2JbnGpXlXVwu6k3xjjt
 ```
 
 说明：

@@ -265,6 +265,34 @@ function readerScrollContainer() {
   return els.readerViewport || els.readerContent;
 }
 
+function adjustReaderSettingsPanelPosition() {
+  const settingsPopover = document.getElementById("readerSettingsPopover");
+  const settingsPanel = document.getElementById("readerSettingsPanel");
+  if (!settingsPopover || !settingsPanel || !settingsPopover.open) {
+    return;
+  }
+  settingsPanel.style.setProperty("--reader-settings-shift-x", "0px");
+  const margin = 8;
+  const rect = settingsPanel.getBoundingClientRect();
+  let shiftX = 0;
+  if (rect.left < margin) {
+    shiftX += margin - rect.left;
+  }
+  if (rect.right > window.innerWidth - margin) {
+    shiftX -= rect.right - (window.innerWidth - margin);
+  }
+  if (Math.abs(shiftX) < 0.5) {
+    shiftX = 0;
+  }
+  settingsPanel.style.setProperty("--reader-settings-shift-x", `${Math.round(shiftX)}px`);
+}
+
+function scheduleReaderSettingsPanelPosition() {
+  requestAnimationFrame(() => {
+    adjustReaderSettingsPanelPosition();
+  });
+}
+
 function bindEvents() {
   els.fileInput.addEventListener("change", onFileChange);
   els.loadSampleBtn.addEventListener("click", () => {
@@ -394,15 +422,20 @@ function bindEvents() {
   els.billingIntervalSelect?.addEventListener("change", onBillingIntervalChange);
   els.upgradeProBtn?.addEventListener("click", onUpgradeProPlan);
   els.manageBillingBtn?.addEventListener("click", onOpenBillingPortal);
+  const settingsPopoverEl = document.getElementById("readerSettingsPopover");
+  settingsPopoverEl?.addEventListener("toggle", () => {
+    if (settingsPopoverEl.open) {
+      scheduleReaderSettingsPanelPosition();
+    }
+  });
 
   document.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target : null;
     if (els.accountMenu?.open && !target?.closest("#accountMenu")) {
       els.accountMenu.open = false;
     }
-    const settingsPopover = document.getElementById("readerSettingsPopover");
-    if (settingsPopover?.open && !target?.closest("#readerSettingsPopover")) {
-      settingsPopover.open = false;
+    if (settingsPopoverEl?.open && !target?.closest("#readerSettingsPopover")) {
+      settingsPopoverEl.open = false;
     }
   });
 
@@ -413,6 +446,7 @@ function bindEvents() {
   });
 
   window.addEventListener("keydown", onReaderHotkey);
+  window.addEventListener("resize", scheduleReaderSettingsPanelPosition);
 
   initMoreAccordion();
 }
@@ -4364,6 +4398,8 @@ async function onUpgradeProPlanByStripe() {
       body: JSON.stringify({
         userId: state.sync.userId,
         interval,
+        billingCycle: interval,
+        billing_cycle: interval,
       }),
     });
     if (payload?.billing) {
