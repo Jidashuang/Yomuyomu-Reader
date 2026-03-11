@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>支付成功 - YomuYomu</title>
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      .billing-result-wrap {
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+      .billing-result-card {
+        width: min(560px, 100%);
+        background: rgba(255, 255, 255, 0.92);
+        border-radius: 20px;
+        box-shadow: 0 18px 46px rgba(30, 41, 59, 0.12);
+        padding: 28px;
+      }
+      .billing-result-card h1 {
+        margin: 0 0 10px;
+        font-size: 1.6rem;
+      }
+      .billing-result-card p {
+        margin: 0 0 10px;
+        line-height: 1.6;
+      }
+      .billing-result-actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="billing-result-wrap">
+      <section class="billing-result-card">
+        <h1>支付已完成</h1>
+        <p id="statusText">正在确认订阅状态，请稍候...</p>
+        <p id="detailText" class="meta"></p>
+        <div class="billing-result-actions">
+          <a class="secondary-btn" href="/">返回阅读器</a>
+          <button id="retryBtn" class="secondary-btn" type="button">重试确认</button>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      (function () {
+        const statusEl = document.getElementById("statusText");
+        const detailEl = document.getElementById("detailText");
+        const retryBtn = document.getElementById("retryBtn");
+
+        function readSyncState() {
+          try {
+            const raw = localStorage.getItem("yomuyomu_sync_v2") || "{}";
+            const parsed = JSON.parse(raw);
+            return {
+              userId: String(parsed.userId || "").trim(),
+              accountToken: String(parsed.accountToken || "").trim(),
+            };
+          } catch {
+            return { userId: "", accountToken: "" };
+          }
+        }
+
+        function setStatus(message, isError) {
+          statusEl.textContent = message;
+          statusEl.style.color = isError ? "#b42318" : "";
+        }
+
+        async function confirmCheckout() {
+          const url = new URL(window.location.href);
+          const sessionId = String(url.searchParams.get("session_id") || "").trim();
+          if (!sessionId) {
+            setStatus("缺少 session_id，无法确认支付结果。", true);
+            detailEl.textContent = "请返回阅读器后刷新套餐状态，或重新发起支付。";
+            return;
+          }
+
+          const sync = readSyncState();
+          const headers = { "Content-Type": "application/json" };
+          if (sync.accountToken) {
+            headers["X-Account-Token"] = sync.accountToken;
+          }
+
+          try {
+            const response = await fetch("/api/billing/checkout-complete", {
+              method: "POST",
+              headers,
+              body: JSON.stringify({
+                sessionId,
+                userId: sync.userId,
+              }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || !payload?.ok) {
+              const message = String(payload?.error || `HTTP ${response.status}`);
+              throw new Error(message);
+            }
+            const plan = String(payload?.billing?.plan || "").toLowerCase() === "pro" ? "Pro" : "基础版";
+            const billingCycleRaw = String(
+              payload?.billingCycle || payload?.billing?.billingCycle || ""
+            ).toLowerCase();
+            const billingCycle =
+              billingCycleRaw === "yearly"
+                ? "年付（Pro Yearly — $60/year）"
+                : billingCycleRaw === "monthly"
+                ? "月付（Pro Monthly — $6/month）"
+                : "";
+            setStatus("支付成功，订阅状态已同步。", false);
+            detailEl.textContent = billingCycle
+              ? `当前套餐：${plan}，已开通 ${billingCycle}。你可以返回阅读器继续使用。`
+              : `当前套餐：${plan}。你可以返回阅读器继续使用。`;
+          } catch (error) {
+            setStatus(`支付确认失败：${error.message}`, true);
+            detailEl.textContent = "可点击“重试确认”，或返回阅读器后查看套餐状态。";
+          }
+        }
+
+        retryBtn.addEventListener("click", () => {
+          setStatus("正在重试确认...", false);
+          detailEl.textContent = "";
+          void confirmCheckout();
+        });
+
+        void confirmCheckout();
+      })();
+    </script>
+  </body>
+</html>

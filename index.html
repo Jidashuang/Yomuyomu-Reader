@@ -325,17 +325,20 @@
                   <div class="more-section-body">
                     <section id="planCard" class="plan-card">
                       <div id="planLiteBlock" class="plan-lite" hidden>
-                        <h4>Pro 能力</h4>
-                        <p class="meta">当前暂未开放升级。</p>
-                        <button id="joinWaitlistBtn" class="secondary-btn small" type="button">加入等待列表</button>
+                        <h4>Stripe 订阅未配置</h4>
+                        <p class="meta">当前环境尚未启用 Stripe 测试模式，请联系管理员完成配置。</p>
                       </div>
                       <div id="planFullBlock">
                         <div class="plan-head">
                           <h3>套餐与支付</h3>
                           <span id="planLabel" class="plan-pill free">基础版</span>
                         </div>
-                        <p id="planHint" class="meta">基础版：仅支持 TXT 导入，云同步与全量导出需升级。</p>
-                        <p id="planComingSoon" class="meta" hidden>当前暂未开放升级。</p>
+                        <p id="planHint" class="meta">Stripe 订阅：支持 Pro Monthly 与 Pro Yearly。</p>
+                        <p id="planComingSoon" class="meta" hidden></p>
+                        <ul class="plan-pricing-list">
+                          <li><strong>Pro Monthly — $6/month</strong></li>
+                          <li><strong>Pro Yearly — $60/year</strong>（比月付更优惠，省 $12/年）</li>
+                        </ul>
                         <ul id="planBenefitList" class="plan-benefit-list">
                           <li>
                             <span>高级导入（EPUB/PDF/MOBI）</span>
@@ -353,14 +356,12 @@
                         <div id="paymentControls">
                           <label for="payChannelSelect">支付渠道</label>
                           <select id="payChannelSelect">
-                            <option value="wechat">微信支付</option>
-                            <option value="alipay">支付宝</option>
-                            <option value="stripe">Stripe（国际卡）</option>
+                            <option value="stripe">Stripe Checkout（测试模式）</option>
                           </select>
                           <label for="billingIntervalSelect">订阅周期</label>
                           <select id="billingIntervalSelect">
-                            <option value="monthly">月付</option>
-                            <option value="yearly">年付</option>
+                            <option value="monthly">Pro Monthly — $6/month</option>
+                            <option value="yearly">Pro Yearly — $60/year（更优惠）</option>
                           </select>
                           <div class="lookup-actions">
                             <button id="upgradeProBtn">订阅 Pro</button>
@@ -368,9 +369,9 @@
                           </div>
                         </div>
                         <p id="paymentDisabledHint" class="meta" hidden>
-                          当前暂未开放升级。
+                          Stripe 支付未配置，暂时无法升级。
                         </p>
-                        <p id="billingFlowHint" class="meta">微信/支付宝优先，Stripe 作为国际卡支付方式。</p>
+                        <p id="billingFlowHint" class="meta">Stripe Checkout 支付成功后会回跳并由服务端验单开通。</p>
                       </div>
                     </section>
                   </div>

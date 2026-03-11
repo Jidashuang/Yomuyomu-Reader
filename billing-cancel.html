@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>支付已取消 - YomuYomu</title>
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      .billing-result-wrap {
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+      .billing-result-card {
+        width: min(560px, 100%);
+        background: rgba(255, 255, 255, 0.92);
+        border-radius: 20px;
+        box-shadow: 0 18px 46px rgba(30, 41, 59, 0.12);
+        padding: 28px;
+      }
+      .billing-result-card h1 {
+        margin: 0 0 10px;
+        font-size: 1.6rem;
+      }
+      .billing-result-card p {
+        margin: 0 0 10px;
+        line-height: 1.6;
+      }
+      .billing-result-actions {
+        margin-top: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="billing-result-wrap">
+      <section class="billing-result-card">
+        <h1>你已取消本次支付</h1>
+        <p>本次 Stripe Checkout 没有完成扣款，套餐不会发生变化。</p>
+        <p class="meta">你可以稍后返回阅读器再次发起支付。</p>
+        <div class="billing-result-actions">
+          <a class="secondary-btn" href="/">返回阅读器</a>
+        </div>
+      </section>
+    </div>
+  </body>
+</html>

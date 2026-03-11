@@ -19,8 +19,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import hashlib
-import hmac
 import json
 import os
 import posixpath
@@ -46,6 +44,11 @@ try:
     import requests
 except Exception:  # pragma: no cover - optional dependency
     requests = None
+
+try:
+    import stripe
+except Exception:  # pragma: no cover - optional dependency
+    stripe = None
 
 try:
     from cryptography.hazmat.primitives import hashes, serialization
@@ -143,7 +146,9 @@ ALIPAY_PAY_ENABLED = os.getenv("ALIPAY_PAY_ENABLED", "1").strip() != "0"
 STRIPE_PAY_ENABLED = os.getenv("STRIPE_PAY_ENABLED", "0").strip() == "1"
 WECHAT_PAY_ENTRY_URL = os.getenv("WECHAT_PAY_ENTRY_URL", "").strip()
 ALIPAY_PAY_ENTRY_URL = os.getenv("ALIPAY_PAY_ENTRY_URL", "").strip()
+STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY", "").strip()
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
+STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "").strip()
 STRIPE_PRICE_ID_MONTHLY = os.getenv("STRIPE_PRICE_ID_MONTHLY", "").strip()
 STRIPE_PRICE_ID_YEARLY = os.getenv("STRIPE_PRICE_ID_YEARLY", "").strip()
 STRIPE_PAYMENT_LINK_MONTHLY = os.getenv("STRIPE_PAYMENT_LINK_MONTHLY", "").strip()
@@ -207,7 +212,9 @@ ALIPAY_PAY_ENABLED = settings.ALIPAY_PAY_ENABLED
 STRIPE_PAY_ENABLED = settings.STRIPE_PAY_ENABLED
 WECHAT_PAY_ENTRY_URL = settings.WECHAT_PAY_ENTRY_URL
 ALIPAY_PAY_ENTRY_URL = settings.ALIPAY_PAY_ENTRY_URL
+STRIPE_PUBLISHABLE_KEY = settings.STRIPE_PUBLISHABLE_KEY
 STRIPE_SECRET_KEY = settings.STRIPE_SECRET_KEY
+STRIPE_PRICE_ID = settings.STRIPE_PRICE_ID
 STRIPE_PRICE_ID_MONTHLY = settings.STRIPE_PRICE_ID_MONTHLY
 STRIPE_PRICE_ID_YEARLY = settings.STRIPE_PRICE_ID_YEARLY
 STRIPE_PAYMENT_LINK_MONTHLY = settings.STRIPE_PAYMENT_LINK_MONTHLY
@@ -332,12 +339,15 @@ def normalize_stripe_interval(value: str | None) -> str:
 def stripe_price_id(interval: str) -> str:
     normalized = normalize_stripe_interval(interval)
     if normalized == "yearly":
-        return STRIPE_PRICE_ID_YEARLY or STRIPE_PRICE_ID_MONTHLY
-    return STRIPE_PRICE_ID_MONTHLY or STRIPE_PRICE_ID_YEARLY
+        return STRIPE_PRICE_ID_YEARLY or STRIPE_PRICE_ID or STRIPE_PRICE_ID_MONTHLY
+    return STRIPE_PRICE_ID_MONTHLY or STRIPE_PRICE_ID or STRIPE_PRICE_ID_YEARLY
 
 
 def stripe_checkout_enabled() -> bool:
-    return bool(stripe_runtime_enabled() and (STRIPE_PRICE_ID_MONTHLY or STRIPE_PRICE_ID_YEARLY))
+    return bool(
+        stripe_runtime_enabled()
+        and (STRIPE_PRICE_ID_MONTHLY or STRIPE_PRICE_ID_YEARLY or STRIPE_PRICE_ID)
+    )
 
 
 def stripe_payment_link_url() -> str:
@@ -352,9 +362,18 @@ def stripe_payment_link_enabled() -> bool:
 def stripe_runtime_enabled() -> bool:
     return bool(
         STRIPE_PAY_ENABLED
-        and requests is not None
+        and stripe is not None
         and STRIPE_SECRET_KEY
     )
+
+
+def stripe_normalize_billing_cycle(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"monthly", "month"}:
+        return "monthly"
+    if raw in {"yearly", "year", "annual"}:
+        return "yearly"
+    return ""
 
 
 def is_abs_http_url(value: str | None) -> bool:
@@ -378,94 +397,6 @@ def build_pay_url(template: str, *, order_id: str, user_id: str, channel: str) -
         return mapped
     sep = "&" if "?" in mapped else "?"
     return f"{mapped}{sep}orderId={order_id}&userId={user_id}&channel={channel}"
-
-
-def stripe_api_request(
-    method: str,
-    path: str,
-    *,
-    data: dict[str, str | list[str]] | None = None,
-    timeout: int = 12,
-) -> tuple[dict | None, str]:
-    if requests is None:
-        return None, "requests 未安装，无法调用 Stripe API。"
-    if not STRIPE_SECRET_KEY:
-        return None, "缺少 STRIPE_SECRET_KEY。"
-    target = f"{STRIPE_API_BASE.rstrip('/')}/{path.lstrip('/')}"
-    headers = {
-        "Authorization": f"Bearer {STRIPE_SECRET_KEY}",
-    }
-    if method.upper() != "GET":
-        headers["Content-Type"] = "application/x-www-form-urlencoded"
-    try:
-        req_method = method.upper()
-        request_kwargs: dict = {
-            "headers": headers,
-            "timeout": timeout,
-        }
-        if req_method == "GET":
-            request_kwargs["params"] = data or None
-        else:
-            request_kwargs["data"] = data or None
-        resp = requests.request(
-            req_method,
-            target,
-            **request_kwargs,
-        )
-    except Exception as exc:
-        return None, f"Stripe API 请求失败: {exc}"
-    payload: dict | None = None
-    if resp.text:
-        try:
-            parsed = resp.json()
-            payload = parsed if isinstance(parsed, dict) else {}
-        except Exception:
-            payload = {}
-    else:
-        payload = {}
-    if resp.status_code >= 400:
-        err = ""
-        if isinstance(payload, dict):
-            err_obj = payload.get("error")
-            if isinstance(err_obj, dict):
-                err = str(err_obj.get("message", "") or "").strip()
-        return payload, err or f"Stripe API 返回 HTTP {resp.status_code}"
-    return payload or {}, ""
-
-
-def parse_stripe_signature_header(header_value: str) -> tuple[int, list[str]]:
-    timestamp = 0
-    signatures: list[str] = []
-    for part in str(header_value or "").split(","):
-        key, _, value = part.strip().partition("=")
-        if not key or not value:
-            continue
-        if key == "t":
-            try:
-                timestamp = int(value)
-            except Exception:
-                timestamp = 0
-        elif key == "v1":
-            signatures.append(value)
-    return timestamp, signatures
-
-
-def verify_stripe_signature(raw: bytes, header_value: str) -> bool:
-    if not STRIPE_WEBHOOK_SECRET:
-        return True
-    timestamp, signatures = parse_stripe_signature_header(header_value)
-    if timestamp <= 0 or not signatures:
-        return False
-    now = int(time.time())
-    if STRIPE_WEBHOOK_TOLERANCE_SECONDS > 0 and abs(now - timestamp) > STRIPE_WEBHOOK_TOLERANCE_SECONDS:
-        return False
-    signed_payload = f"{timestamp}.".encode("utf-8") + raw
-    expected = hmac.new(
-        STRIPE_WEBHOOK_SECRET.encode("utf-8"),
-        signed_payload,
-        hashlib.sha256,
-    ).hexdigest()
-    return any(hmac.compare_digest(expected, item) for item in signatures)
 
 
 def stripe_period_end_ms(value: int | str | None) -> int:
@@ -1617,6 +1548,8 @@ class ApiHandler(SimpleHTTPRequestHandler):
         billing["paymentEnabled"] = settings.payment_enabled()
         billing["manualPlanChangeEnabled"] = BILLING_ALLOW_MANUAL_PLAN_CHANGE
         billing["manualPaymentConfirmEnabled"] = BILLING_ALLOW_MANUAL_PAYMENT_CONFIRM
+        billing["appBaseUrl"] = self.resolve_app_base_url()
+        billing["billingCycle"] = stripe_normalize_billing_cycle(billing.get("billingCycle"))
         billing["priceFen"] = PRO_PRICE_FEN
         billing["orderExpireMinutes"] = ORDER_EXPIRE_MINUTES
         billing["stripe"] = {
@@ -1624,16 +1557,21 @@ class ApiHandler(SimpleHTTPRequestHandler):
             "portalReady": self._stripe_portal_ready(),
             "paymentLinkReady": stripe_link_ready,
             "paymentLink": stripe_link if stripe_link_ready else "",
+            "publishableKey": str(STRIPE_PUBLISHABLE_KEY or "").strip(),
             "paymentMode": (
                 "payment_link"
                 if stripe_link_ready
                 else ("checkout" if stripe_checkout_ready else "none")
             ),
             "intervals": {
-                "monthly": bool(STRIPE_PRICE_ID_MONTHLY),
-                "yearly": bool(STRIPE_PRICE_ID_YEARLY),
+                "monthly": bool(STRIPE_PRICE_ID_MONTHLY or STRIPE_PRICE_ID),
+                "yearly": bool(STRIPE_PRICE_ID_YEARLY or STRIPE_PRICE_ID),
             },
-            "defaultInterval": "monthly" if STRIPE_PRICE_ID_MONTHLY or not STRIPE_PRICE_ID_YEARLY else "yearly",
+            "defaultInterval": (
+                "monthly"
+                if (STRIPE_PRICE_ID_MONTHLY or STRIPE_PRICE_ID or not STRIPE_PRICE_ID_YEARLY)
+                else "yearly"
+            ),
             "customerId": str(billing.get("stripeCustomerId", "") or "").strip(),
             "subscriptionId": str(billing.get("stripeSubscriptionId", "") or "").strip(),
         }
@@ -1713,29 +1651,61 @@ class ApiHandler(SimpleHTTPRequestHandler):
     def _stripe_portal_ready() -> bool:
         return bool(stripe_runtime_enabled())
 
+    @staticmethod
+    def _stripe_object_to_dict(value) -> dict:  # noqa: ANN001
+        if isinstance(value, dict):
+            return value
+        if hasattr(value, "to_dict_recursive"):
+            try:
+                parsed = value.to_dict_recursive()
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+        return {}
+
+    @staticmethod
+    def _stripe_error_message(exc: Exception, fallback: str) -> str:
+        if stripe is not None and isinstance(exc, stripe.error.StripeError):
+            user_message = str(getattr(exc, "user_message", "") or "").strip()
+            message = str(getattr(exc, "message", "") or "").strip()
+            return user_message or message or fallback
+        text = str(exc).strip()
+        return text or fallback
+
+    @staticmethod
+    def _stripe_sdk_ready() -> bool:
+        if not stripe_runtime_enabled() or stripe is None:
+            return False
+        stripe.api_key = STRIPE_SECRET_KEY
+        stripe.max_network_retries = 2
+        return True
+
     def _stripe_success_url(self) -> str:
-        if is_abs_http_url(STRIPE_SUCCESS_URL):
-            return STRIPE_SUCCESS_URL
-        if STRIPE_SUCCESS_URL.startswith("/"):
-            base = f"{self.resolve_app_base_url()}{STRIPE_SUCCESS_URL}"
-        else:
-            base = self.resolve_app_base_url(STRIPE_SUCCESS_URL)
-        sep = "&" if "?" in base else "?"
-        return (
-            f"{base}{sep}billing=success"
-            f"&channel={PAY_CHANNEL_STRIPE}"
-            "&session_id={CHECKOUT_SESSION_ID}"
-        )
+        base_url = self.resolve_app_base_url()
+        configured = str(STRIPE_SUCCESS_URL or "").strip()
+        if configured:
+            if is_abs_http_url(configured):
+                base = configured
+            elif configured.startswith("/"):
+                base = f"{base_url}{configured}"
+            else:
+                base = self.resolve_app_base_url(configured)
+            if "{CHECKOUT_SESSION_ID}" in base:
+                return base
+            sep = "&" if "?" in base else "?"
+            return f"{base}{sep}session_id={{CHECKOUT_SESSION_ID}}"
+        return f"{base_url}/billing-success.html?session_id={{CHECKOUT_SESSION_ID}}"
 
     def _stripe_cancel_url(self) -> str:
-        if is_abs_http_url(STRIPE_CANCEL_URL):
-            return STRIPE_CANCEL_URL
-        if STRIPE_CANCEL_URL.startswith("/"):
-            base = f"{self.resolve_app_base_url()}{STRIPE_CANCEL_URL}"
-        else:
-            base = self.resolve_app_base_url(STRIPE_CANCEL_URL)
-        sep = "&" if "?" in base else "?"
-        return f"{base}{sep}billing=cancel&channel={PAY_CHANNEL_STRIPE}"
+        base_url = self.resolve_app_base_url()
+        configured = str(STRIPE_CANCEL_URL or "").strip()
+        if configured:
+            if is_abs_http_url(configured):
+                return configured
+            if configured.startswith("/"):
+                return f"{base_url}{configured}"
+            return self.resolve_app_base_url(configured)
+        return f"{base_url}/billing-cancel.html"
 
     def _stripe_portal_return_url(self) -> str:
         if is_abs_http_url(STRIPE_PORTAL_RETURN_URL):
@@ -1743,22 +1713,35 @@ class ApiHandler(SimpleHTTPRequestHandler):
         if STRIPE_PORTAL_RETURN_URL.startswith("/"):
             base = f"{self.resolve_app_base_url()}{STRIPE_PORTAL_RETURN_URL}"
         else:
-            base = self.resolve_app_base_url(STRIPE_PORTAL_RETURN_URL)
-        sep = "&" if "?" in base else "?"
-        return f"{base}{sep}billing=portal&channel={PAY_CHANNEL_STRIPE}"
+            base = self.resolve_app_base_url(STRIPE_PORTAL_RETURN_URL or "/")
+        return base
 
     def _stripe_retrieve_checkout_session(self, session_id: str) -> tuple[dict | None, str]:
         session_key = str(session_id or "").strip()
         if not session_key:
             return None, "缺少 sessionId。"
-        data = {"expand[]": ["subscription", "customer"]}
-        return stripe_api_request("GET", f"/v1/checkout/sessions/{quote_plus(session_key)}", data=data)
+        if not self._stripe_sdk_ready():
+            return None, "Stripe SDK 未就绪，请检查 STRIPE_SECRET_KEY 与依赖安装。"
+        try:
+            session = stripe.checkout.Session.retrieve(
+                session_key,
+                expand=["subscription", "customer"],
+            )
+            return self._stripe_object_to_dict(session), ""
+        except Exception as exc:
+            return None, self._stripe_error_message(exc, "无法查询 Stripe Checkout Session。")
 
     def _stripe_retrieve_subscription(self, subscription_id: str) -> tuple[dict | None, str]:
         sub_key = str(subscription_id or "").strip()
         if not sub_key:
             return None, "缺少订阅 ID。"
-        return stripe_api_request("GET", f"/v1/subscriptions/{quote_plus(sub_key)}")
+        if not self._stripe_sdk_ready():
+            return None, "Stripe SDK 未就绪，请检查 STRIPE_SECRET_KEY 与依赖安装。"
+        try:
+            subscription = stripe.Subscription.retrieve(sub_key, expand=["customer"])
+            return self._stripe_object_to_dict(subscription), ""
+        except Exception as exc:
+            return None, self._stripe_error_message(exc, "无法查询 Stripe 订阅状态。")
 
     def _resolve_billing_user_for_stripe(
         self,
@@ -1807,6 +1790,25 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 customer_id = str(customer or "").strip()
         status = normalize_subscription_status(sub_obj.get("status"))
         period_end_ms = stripe_period_end_ms(sub_obj.get("current_period_end"))
+        subscription_metadata = (
+            sub_obj.get("metadata") if isinstance(sub_obj.get("metadata"), dict) else {}
+        )
+        interval_from_metadata = ""
+        if isinstance(metadata, dict):
+            interval_from_metadata = stripe_normalize_billing_cycle(metadata.get("interval"))
+        billing_cycle = interval_from_metadata or stripe_normalize_billing_cycle(
+            subscription_metadata.get("interval")
+        )
+        if not billing_cycle:
+            items = sub_obj.get("items")
+            items_data = items.get("data") if isinstance(items, dict) else []
+            if isinstance(items_data, list) and items_data:
+                first_item = items_data[0] if isinstance(items_data[0], dict) else {}
+                price = first_item.get("price") if isinstance(first_item, dict) else {}
+                recurring = price.get("recurring") if isinstance(price, dict) else {}
+                billing_cycle = stripe_normalize_billing_cycle(
+                    recurring.get("interval") if isinstance(recurring, dict) else ""
+                )
         user_id = self._resolve_billing_user_for_stripe(
             customer_id=customer_id,
             user_id_hint=user_id_hint,
@@ -1814,6 +1816,9 @@ class ApiHandler(SimpleHTTPRequestHandler):
         )
         if not user_id:
             return None, "无法将 Stripe 订阅映射到用户。"
+        if not billing_cycle:
+            current = self.billing_store.get_billing(user_id)
+            billing_cycle = stripe_normalize_billing_cycle(current.get("billingCycle"))
         now_ms = int(time.time() * 1000)
         inactive_statuses = {"canceled", "incomplete_expired"}
         grace_statuses = {"past_due", "unpaid", "incomplete"}
@@ -1845,6 +1850,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
             grace_until_at=grace_until_at,
             payment_failed_at=payment_failed_at,
             billing_state=billing_state,
+            billing_cycle=billing_cycle if target_plan == PRO_PLAN else "",
         )
         return billing, ""
 
@@ -1870,7 +1876,13 @@ class ApiHandler(SimpleHTTPRequestHandler):
         metadata = session.get("metadata") if isinstance(session.get("metadata"), dict) else {}
         order_id = str(metadata.get("orderId", "") or "").strip() if isinstance(metadata, dict) else ""
         customer = session.get("customer")
-        customer_id = str(customer.get("id", "") or "").strip() if isinstance(customer, dict) else str(customer or "").strip()
+        customer_id = (
+            str(customer.get("id", "") or "").strip()
+            if isinstance(customer, dict)
+            else str(customer or "").strip()
+        )
+        if not customer_id:
+            return None, None, "Stripe Checkout 缺少 customer 信息。"
         subscription_ref = session.get("subscription")
         subscription_obj = subscription_ref if isinstance(subscription_ref, dict) else None
         subscription_id = (
@@ -1878,6 +1890,8 @@ class ApiHandler(SimpleHTTPRequestHandler):
             if isinstance(subscription_ref, dict)
             else str(subscription_ref or "").strip()
         )
+        if not subscription_id:
+            return None, None, "Stripe Checkout 缺少 subscription 信息。"
         billing, sync_error = self._sync_billing_from_stripe_subscription(
             subscription=subscription_obj,
             subscription_id=subscription_id,
@@ -1903,42 +1917,55 @@ class ApiHandler(SimpleHTTPRequestHandler):
         price_id = stripe_price_id(interval)
         if not price_id:
             return None, f"Stripe 未配置 {normalize_stripe_interval(interval)} 的 price_id。"
+        if not self._stripe_sdk_ready():
+            return None, "Stripe SDK 未就绪，请检查 STRIPE_SECRET_KEY 与依赖安装。"
         billing = self.billing_store.get_billing(user_id)
-        data: dict[str, str] = {
+        normalized_interval = normalize_stripe_interval(interval)
+        data: dict = {
             "mode": "subscription",
-            "line_items[0][price]": price_id,
-            "line_items[0][quantity]": "1",
+            "line_items": [{"price": price_id, "quantity": 1}],
             "success_url": self._stripe_success_url(),
             "cancel_url": self._stripe_cancel_url(),
             "client_reference_id": user_id,
-            "metadata[userId]": user_id,
-            "metadata[plan]": PRO_PLAN,
-            "metadata[interval]": normalize_stripe_interval(interval),
-            "metadata[orderId]": order_id,
-            "allow_promotion_codes": "true",
+            "metadata": {
+                "userId": user_id,
+                "plan": PRO_PLAN,
+                "interval": normalized_interval,
+                "orderId": order_id,
+            },
+            "subscription_data": {
+                "metadata": {
+                    "userId": user_id,
+                    "plan": PRO_PLAN,
+                    "interval": normalized_interval,
+                    "orderId": order_id,
+                }
+            },
+            "allow_promotion_codes": True,
         }
         customer_id = str(billing.get("stripeCustomerId", "") or "").strip()
         if customer_id:
             data["customer"] = customer_id
-        else:
-            data["customer_creation"] = "always"
-        session, error = stripe_api_request("POST", "/v1/checkout/sessions", data=data)
-        if session is None:
-            return None, error or "Stripe Checkout Session 创建失败。"
-        return session, ""
+        try:
+            session = stripe.checkout.Session.create(**data)
+            return self._stripe_object_to_dict(session), ""
+        except Exception as exc:
+            return None, self._stripe_error_message(exc, "Stripe Checkout Session 创建失败。")
 
     def _create_stripe_portal_session(self, *, customer_id: str) -> tuple[dict | None, str]:
         target_customer = str(customer_id or "").strip()
         if not target_customer:
             return None, "缺少 Stripe customerId。"
-        data = {
-            "customer": target_customer,
-            "return_url": self._stripe_portal_return_url(),
-        }
-        portal, error = stripe_api_request("POST", "/v1/billing_portal/sessions", data=data)
-        if portal is None:
-            return None, error or "Stripe Portal Session 创建失败。"
-        return portal, ""
+        if not self._stripe_sdk_ready():
+            return None, "Stripe SDK 未就绪，请检查 STRIPE_SECRET_KEY 与依赖安装。"
+        try:
+            portal = stripe.billing_portal.Session.create(
+                customer=target_customer,
+                return_url=self._stripe_portal_return_url(),
+            )
+            return self._stripe_object_to_dict(portal), ""
+        except Exception as exc:
+            return None, self._stripe_error_message(exc, "Stripe Portal Session 创建失败。")
 
     @staticmethod
     def _parse_json_or_form_raw(raw: bytes, content_type: str) -> dict | None:
@@ -2313,18 +2340,30 @@ class ApiHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/payment/options":
             if not settings.payment_enabled():
-                json_response(self, 200, {"enabled": False})
+                json_response(
+                    self,
+                    200,
+                    {
+                        "enabled": False,
+                        "appBaseUrl": self.resolve_app_base_url(),
+                        "stripe": {
+                            "publishableKey": str(STRIPE_PUBLISHABLE_KEY or "").strip(),
+                        },
+                    },
+                )
                 return
             json_response(
                 self,
                 200,
                 {
                     "enabled": True,
+                    "appBaseUrl": self.resolve_app_base_url(),
                     "channels": payment_channels(),
                     "stripe": {
                         "paymentLinkReady": self._stripe_payment_link_ready(),
                         "paymentLink": stripe_payment_link_url(),
                         "checkoutReady": self._stripe_checkout_ready(),
+                        "publishableKey": str(STRIPE_PUBLISHABLE_KEY or "").strip(),
                     },
                 },
             )
@@ -3029,104 +3068,17 @@ class ApiHandler(SimpleHTTPRequestHandler):
             json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
             return
         user_id = sanitize_user_id(str(payload.get("userId", "default")))
-        channel = normalize_pay_channel(payload.get("channel", PAY_CHANNEL_WECHAT))
-        billing = self.require_registered_account(user_id=user_id, payload=payload)
-        if billing is None:
-            return
-        channels = billing["paymentChannels"]
-        if not any_payment_channel_enabled():
-            json_response(
-                self,
-                503,
-                {
-                    "ok": False,
-                    "code": "PAYMENT_NOT_CONFIGURED",
-                    "error": "支付通道未开启。",
-                    "billing": billing,
-                },
-            )
-            return
-        if channel == PAY_CHANNEL_STRIPE:
-            json_response(
-                self,
-                400,
-                {
-                    "ok": False,
-                    "code": "USE_CHECKOUT_SESSION",
-                    "error": "Stripe 请使用 create-checkout-session 接口。",
-                    "billing": billing,
-                },
-            )
-            return
-        if not channels.get(channel):
-            json_response(
-                self,
-                400,
-                {
-                    "ok": False,
-                    "code": "CHANNEL_DISABLED",
-                    "error": f"支付通道 `{channel}` 未开启。",
-                    "billing": billing,
-                },
-            )
-            return
-        order = self.order_store.create_order(
-            user_id=user_id,
-            channel=channel,
-            amount_fen=PRO_PRICE_FEN,
-            plan=PRO_PLAN,
-        )
-        pay_url = ""
-        payment_mode = "manual_confirm"
-        if channel == PAY_CHANNEL_WECHAT:
-            pay_url = self._create_wechat_official_pay_url(order)
-        elif channel == PAY_CHANNEL_ALIPAY:
-            pay_url = self._create_alipay_official_pay_url(order)
-        if pay_url:
-            payment_mode = "official"
-        if not pay_url:
-            template = pay_entry_url(channel)
-            if template:
-                pay_url = build_pay_url(
-                    template,
-                    order_id=order["orderId"],
-                    user_id=user_id,
-                    channel=channel,
-                )
-                if pay_url:
-                    payment_mode = "entry_url"
-        if not pay_url and not BILLING_ALLOW_MANUAL_PAYMENT_CONFIRM:
-            payment_mode = "unconfigured"
-        if pay_url:
-            order = self.order_store.set_pay_url(order["orderId"], pay_url) or order
-        order_response = self._sanitize_order_for_response(order)
-        order_status_path = (
-            f"/api/billing/order-status?orderId={quote_plus(order['orderId'])}"
-            f"&userId={quote_plus(user_id)}"
-        )
-        if payment_mode == "official":
-            verification_hint = "支付完成后可点击“确认已支付/刷新支付状态”，前端会查询订单并同步套餐状态。"
-        elif payment_mode == "entry_url":
-            verification_hint = "支付页回调成功后，点击“确认已支付/刷新支付状态”同步套餐状态。"
-        elif payment_mode == "manual_confirm":
-            verification_hint = (
-                "当前为开发/演示模式：未配置真实网关。完成模拟支付后，可点击“确认已支付”调用 confirm-paid 接口。"
-            )
-        else:
-            verification_hint = "当前支付渠道尚未配置，请联系管理员完成支付网关接入。"
         json_response(
             self,
-            200,
+            410,
             {
-                "ok": True,
-                "order": order_response,
-                "paymentMode": payment_mode,
-                "orderStatusPath": order_status_path,
-                "verificationHint": verification_hint,
-                "manualConfirmEnabled": BILLING_ALLOW_MANUAL_PAYMENT_CONFIRM,
+                "ok": False,
+                "code": "LEGACY_PAYMENT_DISABLED",
+                "error": "旧版支付流程已停用，请使用 Stripe Checkout。",
                 "billing": self.billing_payload(user_id),
             },
         )
+        return
 
     def handle_billing_create_checkout_session(self) -> None:
         payload = self.read_json_body()
@@ -3135,7 +3087,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
             return
         user_id = sanitize_user_id(str(payload.get("userId", "default")))
         interval = normalize_stripe_interval(payload.get("interval", "monthly"))
-        if interval == "yearly" and not STRIPE_PRICE_ID_YEARLY:
+        if interval == "yearly" and not (STRIPE_PRICE_ID_YEARLY or STRIPE_PRICE_ID):
             json_response(
                 self,
                 400,
@@ -3146,8 +3098,17 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 },
             )
             return
-        if interval == "monthly" and not STRIPE_PRICE_ID_MONTHLY and STRIPE_PRICE_ID_YEARLY:
-            interval = "yearly"
+        if interval == "monthly" and not (STRIPE_PRICE_ID_MONTHLY or STRIPE_PRICE_ID):
+            json_response(
+                self,
+                400,
+                {
+                    "ok": False,
+                    "code": "MONTHLY_NOT_CONFIGURED",
+                    "error": "Stripe 月付套餐尚未配置。",
+                },
+            )
+            return
         billing = self.require_registered_account(user_id=user_id, payload=payload)
         if billing is None:
             return
@@ -3202,6 +3163,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
         checkout_url = str(session.get("url", "") or "").strip()
         if checkout_url:
             order = self.order_store.set_pay_url(order["orderId"], checkout_url) or order
+        order_response = self._sanitize_order_for_response(order)
         json_response(
             self,
             200,
@@ -3211,7 +3173,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 "checkoutUrl": checkout_url,
                 "sessionId": str(session.get("id", "") or "").strip(),
                 "interval": interval,
-                "order": order,
+                "order": order_response,
                 "billing": self.billing_payload(user_id),
             },
         )
@@ -3260,6 +3222,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
             {
                 "ok": True,
                 "billing": self.billing_payload(billing["userId"]),
+                "billingCycle": stripe_normalize_billing_cycle(billing.get("billingCycle")),
                 "order": order or {},
                 "session": {
                     "id": str(session.get("id", "") or "").strip(),
@@ -3340,22 +3303,46 @@ class ApiHandler(SimpleHTTPRequestHandler):
 
     def handle_billing_stripe_webhook(self) -> None:
         raw = self.read_raw_body()
-        signature = str(self.headers.get("Stripe-Signature", "") or "").strip()
-        if not verify_stripe_signature(raw, signature):
+        if not self._stripe_sdk_ready():
             json_response(
                 self,
-                400,
+                503,
                 {
                     "ok": False,
-                    "code": "INVALID_STRIPE_SIGNATURE",
-                    "error": "Stripe Webhook 签名校验失败。",
+                    "code": "STRIPE_NOT_READY",
+                    "error": "Stripe SDK 未就绪，请检查 STRIPE_SECRET_KEY 与依赖安装。",
                 },
             )
             return
-        payload = self._parse_json_or_form_raw(raw, self.headers.get("Content-Type", ""))
-        if payload is None or not isinstance(payload, dict):
-            json_response(self, 400, {"ok": False, "error": "Invalid webhook payload"})
-            return
+        payload: dict | None = None
+        if STRIPE_WEBHOOK_SECRET:
+            signature = str(self.headers.get("Stripe-Signature", "") or "").strip()
+            try:
+                event_obj = stripe.Webhook.construct_event(
+                    payload=raw,
+                    sig_header=signature,
+                    secret=STRIPE_WEBHOOK_SECRET,
+                    tolerance=STRIPE_WEBHOOK_TOLERANCE_SECONDS
+                    if STRIPE_WEBHOOK_TOLERANCE_SECONDS > 0
+                    else None,
+                )
+                payload = self._stripe_object_to_dict(event_obj)
+            except Exception as exc:
+                json_response(
+                    self,
+                    400,
+                    {
+                        "ok": False,
+                        "code": "INVALID_STRIPE_SIGNATURE",
+                        "error": self._stripe_error_message(exc, "Stripe Webhook 签名校验失败。"),
+                    },
+                )
+                return
+        else:
+            payload = self._parse_json_or_form_raw(raw, self.headers.get("Content-Type", ""))
+            if payload is None or not isinstance(payload, dict):
+                json_response(self, 400, {"ok": False, "error": "Invalid webhook payload"})
+                return
         event_type = str(payload.get("type", "") or "").strip()
         data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
         event_obj = data.get("object") if isinstance(data.get("object"), dict) else {}
@@ -3431,53 +3418,23 @@ class ApiHandler(SimpleHTTPRequestHandler):
         if payload is None:
             json_response(self, 400, {"ok": False, "error": "Invalid payment payload"})
             return
-        if BILLING_NOTIFY_TOKEN and not self._payment_token_valid():
-            json_response(
-                self,
-                403,
-                {
-                    "ok": False,
-                    "code": "INVALID_PAYMENT_TOKEN",
-                    "error": "支付确认令牌无效。",
-                },
-            )
-            return
-        if not BILLING_NOTIFY_TOKEN and not BILLING_ALLOW_MANUAL_PAYMENT_CONFIRM:
-            json_response(
-                self,
-                403,
-                {
-                    "ok": False,
-                    "code": "MANUAL_PAYMENT_CONFIRM_DISABLED",
-                    "error": "手动支付确认已禁用。",
-                },
-            )
-            return
         order_id = self._extract_order_id(payload)
-        if not order_id:
-            json_response(self, 400, {"ok": False, "error": "Missing orderId"})
-            return
-        external_trade_no = self._extract_external_trade_no(payload)
-        order = self.order_store.mark_paid(
-            order_id,
-            paid_source=source,
-            external_trade_no=external_trade_no,
-        )
-        if not order:
-            json_response(self, 404, {"ok": False, "error": "Order not found"})
-            return
-        self._track_payment_success(order)
-        billing = self._sync_plan_from_paid_order(order)
-        order = self._sanitize_order_for_response(order)
+        user_id = "default"
+        if order_id:
+            existing_order = self.order_store.get_order(order_id)
+            if existing_order:
+                user_id = sanitize_user_id(str(existing_order.get("userId", "default")))
         json_response(
             self,
-            200,
+            410,
             {
-                "ok": True,
-                "order": order,
-                "billing": self.billing_payload(billing["userId"]),
+                "ok": False,
+                "code": "LEGACY_PAYMENT_DISABLED",
+                "error": "手动确认支付流程已停用，请使用 Stripe Checkout 验单。",
+                "billing": self.billing_payload(user_id),
             },
         )
+        return
 
     def handle_billing_notify(self, channel: str) -> None:
         normalized_channel = normalize_pay_channel(channel)

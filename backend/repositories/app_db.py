@@ -104,7 +104,8 @@ class AppDatabase:
                   plan_expire_at INTEGER NOT NULL DEFAULT 0,
                   subscription_status TEXT NOT NULL DEFAULT '',
                   stripe_customer_id TEXT NOT NULL DEFAULT '',
-                  stripe_subscription_id TEXT NOT NULL DEFAULT ''
+                  stripe_subscription_id TEXT NOT NULL DEFAULT '',
+                  billing_cycle TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE TABLE IF NOT EXISTS books (
@@ -255,6 +256,7 @@ class AppDatabase:
             self._ensure_column(conn, "plans", "grace_until_at", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "plans", "payment_failed_at", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "plans", "billing_state", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "plans", "billing_cycle", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "import_jobs", "attempt_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "import_jobs", "heartbeat_at", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "import_jobs", "lease_expires_at", "INTEGER NOT NULL DEFAULT 0")
@@ -327,6 +329,7 @@ class AppDatabase:
             self._ensure_column(conn, "plans", "grace_until_at", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "plans", "payment_failed_at", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "plans", "billing_state", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "plans", "billing_cycle", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "users", "account_token", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "users", "display_name", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "users", "username", "TEXT NOT NULL DEFAULT ''")
@@ -446,6 +449,16 @@ class AppDatabase:
                 """
             )
             self._mark_migration(conn, "007_ai_explain_subject_usage")
+
+        if "008_billing_cycle" not in applied:
+            self._ensure_column(conn, "plans", "billing_cycle", "TEXT NOT NULL DEFAULT ''")
+            conn.execute(
+                """
+                UPDATE plans
+                SET billing_cycle = LOWER(TRIM(COALESCE(billing_cycle, '')))
+                """
+            )
+            self._mark_migration(conn, "008_billing_cycle")
 
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, check_same_thread=False)

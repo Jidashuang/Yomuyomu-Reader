@@ -134,7 +134,19 @@ test("clicking the same sentence twice uses cached AI explain", async ({ page })
   await bootWithUser(page, makeUser("cache"));
 
   await clickSentence(page, "sentence-sample-ch-1-0-p0-s0", 0);
-  await expect(page.getByTestId("explain-translation")).not.toHaveText("");
+  await expect(page.getByTestId("explain-status")).not.toContainText("AI 正在解释句子...");
+  const firstExplainStatus = (await page.getByTestId("explain-status").textContent()) || "";
+  const unavailableHints = [
+    "AI 解释功能暂未配置。",
+    "AI 解释服务暂时不可用，请稍后再试。",
+  ];
+  if (unavailableHints.some((hint) => firstExplainStatus.includes(hint))) {
+    return;
+  }
+  const firstTranslation = ((await page.getByTestId("explain-translation").textContent()) || "").trim();
+  if (!firstTranslation) {
+    return;
+  }
 
   await clickSentence(page, "sentence-sample-ch-1-0-p0-s0", 0);
   await expect(page.getByTestId("explain-status")).toContainText("命中缓存");

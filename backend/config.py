@@ -79,7 +79,9 @@ ALIPAY_PAY_ENABLED = os.getenv("ALIPAY_PAY_ENABLED", "0").strip() == "1"
 STRIPE_PAY_ENABLED = os.getenv("STRIPE_PAY_ENABLED", "0").strip() == "1"
 WECHAT_PAY_ENTRY_URL = os.getenv("WECHAT_PAY_ENTRY_URL", "").strip()
 ALIPAY_PAY_ENTRY_URL = os.getenv("ALIPAY_PAY_ENTRY_URL", "").strip()
+STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY", "").strip()
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
+STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "").strip()
 STRIPE_PRICE_ID_MONTHLY = os.getenv("STRIPE_PRICE_ID_MONTHLY", "").strip()
 STRIPE_PRICE_ID_YEARLY = os.getenv("STRIPE_PRICE_ID_YEARLY", "").strip()
 STRIPE_PAYMENT_LINK_MONTHLY = os.getenv("STRIPE_PAYMENT_LINK_MONTHLY", "").strip()
@@ -365,22 +367,25 @@ def normalize_stripe_interval(value: str | None) -> str:
 def stripe_price_id(interval: str) -> str:
     normalized = normalize_stripe_interval(interval)
     if normalized == "yearly":
-        return STRIPE_PRICE_ID_YEARLY or STRIPE_PRICE_ID_MONTHLY
-    return STRIPE_PRICE_ID_MONTHLY or STRIPE_PRICE_ID_YEARLY
+        return STRIPE_PRICE_ID_YEARLY or STRIPE_PRICE_ID or STRIPE_PRICE_ID_MONTHLY
+    return STRIPE_PRICE_ID_MONTHLY or STRIPE_PRICE_ID or STRIPE_PRICE_ID_YEARLY
 
 
 def stripe_checkout_enabled() -> bool:
-    return bool(stripe_runtime_enabled() and (STRIPE_PRICE_ID_MONTHLY or STRIPE_PRICE_ID_YEARLY))
+    return bool(
+        stripe_runtime_enabled()
+        and (STRIPE_PRICE_ID_MONTHLY or STRIPE_PRICE_ID_YEARLY or STRIPE_PRICE_ID)
+    )
 
 
 def stripe_runtime_enabled() -> bool:
     if not payment_enabled():
         return False
     try:
-        import requests  # type: ignore
+        import stripe  # type: ignore # noqa: F401
     except Exception:
         return False
-    return bool(STRIPE_PAY_ENABLED and requests is not None and STRIPE_SECRET_KEY)
+    return bool(STRIPE_PAY_ENABLED and STRIPE_SECRET_KEY)
 
 
 def is_abs_http_url(value: str | None) -> bool:

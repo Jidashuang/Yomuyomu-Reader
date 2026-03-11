@@ -260,6 +260,29 @@ class BackendServiceTests(unittest.TestCase):
         self.assertEqual(downgraded["plan"], settings.FREE_PLAN)
         self.assertEqual(downgraded["accessState"], "downgraded")
 
+    def test_billing_cycle_is_persisted(self) -> None:
+        self.billing_store.set_plan(
+            "cycle-user",
+            settings.PRO_PLAN,
+            source="stripe-checkout-complete",
+            billing_cycle="yearly",
+            plan_status="active",
+            subscription_status="active",
+        )
+        yearly = self.billing_store.get_billing("cycle-user")
+        self.assertEqual(yearly["billingCycle"], "yearly")
+
+        self.billing_store.set_plan(
+            "cycle-user",
+            settings.PRO_PLAN,
+            source="stripe-webhook:customer.subscription.updated",
+            billing_cycle="monthly",
+            plan_status="active",
+            subscription_status="active",
+        )
+        monthly = self.billing_store.get_billing("cycle-user")
+        self.assertEqual(monthly["billingCycle"], "monthly")
+
     def test_placeholder_pay_entry_url_is_rejected(self) -> None:
         with mock.patch.multiple(
             settings,

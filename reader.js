@@ -30,7 +30,7 @@ export function initApp() {
   state.billing = normalizeBilling(state.billing);
   state.billingOrder = normalizeBillingOrder(state.billingOrder);
   if (!state.billingOrder.channel) {
-    state.billingOrder.channel = "wechat";
+    state.billingOrder.channel = "stripe";
   }
   updateBilling({ userId: state.sync.userId }, false);
   bindEvents();
@@ -71,12 +71,58 @@ const LOGIN_ERROR_MESSAGES = {
   INVALID_CREDENTIALS: "用户名或密码错误。",
 };
 const FORGOT_PASSWORD_PLACEHOLDER_MESSAGE = "重置密码功能即将开放，请联系管理员协助重置密码。";
-const PLACEHOLDER_PAY_HOSTS = new Set([
-  "your-domain.com",
-  "your-wechat-pay-page.example.com",
-  "your-alipay-pay-page.example.com",
-]);
 const RIGHT_PANEL_TABS = ["vocab", "notes", "more"];
+const STRIPE_JS_URL = "https://js.stripe.com/v3";
+
+let stripeSdkLoadPromise = null;
+let stripeClient = null;
+let stripeClientKey = "";
+
+function currentStripePublishableKey() {
+  return String(state.billing?.stripe?.publishableKey || "").trim();
+}
+
+function loadStripeSdk() {
+  if (typeof window.Stripe === "function") {
+    return Promise.resolve();
+  }
+  if (stripeSdkLoadPromise) {
+    return stripeSdkLoadPromise;
+  }
+  stripeSdkLoadPromise = new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${STRIPE_JS_URL}"]`);
+    if (existing) {
+      existing.addEventListener("load", () => resolve(), { once: true });
+      existing.addEventListener("error", () => reject(new Error("Stripe.js 加载失败。")), {
+        once: true,
+      });
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = STRIPE_JS_URL;
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("Stripe.js 加载失败。"));
+    document.head.appendChild(script);
+  });
+  return stripeSdkLoadPromise;
+}
+
+async function ensureStripeClient() {
+  const publishableKey = currentStripePublishableKey();
+  if (!publishableKey) {
+    throw new Error("缺少 STRIPE_PUBLISHABLE_KEY，无法发起 Stripe Checkout。");
+  }
+  await loadStripeSdk();
+  if (typeof window.Stripe !== "function") {
+    throw new Error("Stripe.js 未就绪。");
+  }
+  if (!stripeClient || stripeClientKey !== publishableKey) {
+    stripeClient = window.Stripe(publishableKey);
+    stripeClientKey = publishableKey;
+  }
+  return stripeClient;
+}
 
 function createAnonymousId() {
   const randomPart =
@@ -344,13 +390,10 @@ function bindEvents() {
   els.sendFeedbackBtn?.addEventListener("click", () => {
     void openFeedbackPrompt("feedback");
   });
-  els.payChannelSelect.addEventListener("change", onPayChannelChange);
-  els.billingIntervalSelect.addEventListener("change", onBillingIntervalChange);
-  els.upgradeProBtn.addEventListener("click", onUpgradeProPlan);
-  els.manageBillingBtn.addEventListener("click", onOpenBillingPortal);
-  els.joinWaitlistBtn?.addEventListener("click", () => {
-    showToast("当前暂未开放升级。");
-  });
+  els.payChannelSelect?.addEventListener("change", onPayChannelChange);
+  els.billingIntervalSelect?.addEventListener("change", onBillingIntervalChange);
+  els.upgradeProBtn?.addEventListener("click", onUpgradeProPlan);
+  els.manageBillingBtn?.addEventListener("click", onOpenBillingPortal);
 
   document.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target : null;
@@ -3511,14 +3554,6 @@ function makeStatusChip(label, value, tone = "normal") {
   return `<span class="status-chip ${tone}"><strong>${escapeHtml(label)}</strong>${escapeHtml(value)}</span>`;
 }
 
-function enabledPaymentChannelLabels(channels = {}) {
-  const labels = [];
-  if (channels.wechat) labels.push("微信支付");
-  if (channels.alipay) labels.push("支付宝");
-  if (channels.stripe) labels.push("Stripe（国际卡）");
-  return labels;
-}
-
 function planUiLabel(plan) {
   return normalizePlan(plan) === "pro" ? "Pro" : "基础版";
 }
@@ -3596,11 +3631,19 @@ function normalizePayChannel(value) {
   const raw = String(value || "").toLowerCase();
   if (raw === "stripe") return "stripe";
   if (raw === "alipay") return "alipay";
-  return "wechat";
+  if (raw === "wechat") return "wechat";
+  return "stripe";
 }
 
 function normalizeBillingInterval(value) {
   return String(value || "").toLowerCase() === "yearly" ? "yearly" : "monthly";
+}
+
+function normalizeBillingCycle(value) {
+  const raw = String(value || "").toLowerCase();
+  if (raw === "monthly") return "monthly";
+  if (raw === "yearly") return "yearly";
+  return "";
 }
 
 function normalizeBilling(raw) {
@@ -3640,6 +3683,7 @@ function normalizeBilling(raw) {
     plan: normalizePlan(source.plan),
     source: String(source.source || DEFAULT_BILLING.source),
     subscriptionStatus: String(source.subscriptionStatus || ""),
+    billingCycle: normalizeBillingCycle(source.billingCycle || sourceStripe.billingCycle),
     lastPaidChannel: source.lastPaidChannel ? normalizePayChannel(source.lastPaidChannel) : "",
     lastOrderId: String(source.lastOrderId || ""),
     planExpireAt: Number(source.planExpireAt || 0),
@@ -3648,6 +3692,7 @@ function normalizeBilling(raw) {
     billingState: String(source.billingState || ""),
     accessState: String(source.accessState || "free"),
     accountMode: String(source.accountMode || "guest"),
+    appBaseUrl: String(source.appBaseUrl || DEFAULT_BILLING.appBaseUrl || ""),
     features: {
       advancedImport: Boolean(mergedFeatures.advancedImport),
       cloudSync: Boolean(mergedFeatures.cloudSync),
@@ -3678,6 +3723,7 @@ function normalizeBilling(raw) {
           ? DEFAULT_BILLING.stripe.paymentLinkReady
           : Boolean(sourceStripe.paymentLinkReady),
       paymentLink: String(sourceStripe.paymentLink || "").trim(),
+      publishableKey: String(sourceStripe.publishableKey || DEFAULT_BILLING.stripe.publishableKey || "").trim(),
       paymentMode: String(sourceStripe.paymentMode || DEFAULT_BILLING.stripe.paymentMode || "none"),
       intervals: {
         monthly: Boolean(mergedStripeIntervals.monthly),
@@ -3716,7 +3762,7 @@ function normalizeBillingOrder(raw) {
   return {
     orderId: String(source.orderId || ""),
     status: String(source.status || ""),
-    channel: normalizePayChannel(source.channel || "wechat"),
+    channel: normalizePayChannel(source.channel || "stripe"),
     interval: normalizeBillingInterval(source.interval || "monthly"),
     sessionId: String(source.sessionId || ""),
     paymentMode: String(source.paymentMode || ""),
@@ -3767,113 +3813,7 @@ function channelEnabled(channel) {
 }
 
 function activePayChannel() {
-  const selected = normalizePayChannel(els.payChannelSelect?.value || state.billingOrder.channel);
-  if (channelEnabled(selected)) return selected;
-  if (channelEnabled("wechat")) return "wechat";
-  if (channelEnabled("alipay")) return "alipay";
-  if (channelEnabled("stripe")) return "stripe";
-  return selected;
-}
-
-function hasAnyPaymentChannel() {
-  return channelEnabled("stripe") || channelEnabled("wechat") || channelEnabled("alipay");
-}
-
-function paymentChannelLabel(channel) {
-  const key = normalizePayChannel(channel);
-  if (key === "stripe") return "Stripe（国际卡）";
-  if (key === "alipay") return "支付宝";
-  return "微信支付";
-}
-
-function orderStatusLabel(status) {
-  const key = String(status || "").trim().toLowerCase();
-  if (key === "paid") return "已支付";
-  if (key === "pending") return "待支付";
-  if (key === "expired") return "已过期";
-  if (!key) return "未创建";
-  return key;
-}
-
-function formatBillingDateTime(timestampMs) {
-  const raw = Number(timestampMs || 0);
-  if (!Number.isFinite(raw) || raw <= 0) return "";
-  try {
-    return new Date(raw).toLocaleString("zh-CN", { hour12: false });
-  } catch {
-    return "";
-  }
-}
-
-function isPlaceholderPayUrl(url) {
-  const raw = String(url || "").trim();
-  if (!raw) return false;
-  try {
-    const parsed = new URL(raw, window.location.origin);
-    const host = String(parsed.hostname || "").toLowerCase();
-    if (!host) return false;
-    if (PLACEHOLDER_PAY_HOSTS.has(host)) return true;
-    return host.endsWith(".example.com") || host.endsWith(".example.org") || host.endsWith(".example.net");
-  } catch {
-    return false;
-  }
-}
-
-function legacyBillingFlowHint(channel) {
-  const order = state.billingOrder || {};
-  const orderId = String(order.orderId || "").trim();
-  const status = String(order.status || "").trim().toLowerCase();
-  const paymentMode = String(order.paymentMode || "").trim().toLowerCase();
-  const channelLabel = paymentChannelLabel(channel);
-  const statusText = orderStatusLabel(status);
-  const expiresAtText = formatBillingDateTime(order.expiresAt);
-  const hasSafePayUrl = Boolean(order.payUrl) && !isPlaceholderPayUrl(order.payUrl);
-  const verificationHint = String(order.verificationHint || "").trim();
-  const orderStatusPath =
-    String(order.orderStatusPath || "").trim() ||
-    (orderId
-      ? `/api/billing/order-status?orderId=${encodeURIComponent(orderId)}&userId=${encodeURIComponent(
-          state.sync.userId || ""
-        )}`
-      : "");
-  const manualConfirmEnabled = Boolean(
-    state.billing.manualPaymentConfirmEnabled || order.manualConfirmEnabled
-  );
-  const lines = [];
-  if (!orderId) {
-    lines.push(`请先创建${channelLabel}订单。`);
-    if (manualConfirmEnabled) {
-      lines.push("开发/演示环境可在创建订单后点击“确认已支付”走模拟到账。");
-    }
-    return lines.join(" ");
-  }
-  lines.push(`订单 ${orderId}，当前状态：${statusText}。`);
-  if (status === "paid") {
-    lines.push("支付已确认，Pro 套餐应已生效。");
-    return lines.join(" ");
-  }
-  if (hasSafePayUrl) {
-    lines.push("已生成支付链接，请在新窗口完成支付。");
-  } else if (paymentMode === "manual_confirm" || manualConfirmEnabled) {
-    lines.push("当前为开发/演示模式，未配置真实支付跳转链接。");
-  } else {
-    lines.push("当前支付渠道尚未配置完整，暂无法跳转支付页。");
-  }
-  if (verificationHint) {
-    lines.push(verificationHint);
-  }
-  if (expiresAtText && status === "pending") {
-    lines.push(`订单有效期至 ${expiresAtText}。`);
-  }
-  if (orderStatusPath) {
-    lines.push(`可用 ${orderStatusPath} 查询最新状态。`);
-  }
-  if (manualConfirmEnabled) {
-    lines.push("确认到账后可点击“确认已支付”调用 confirm-paid 开通套餐。");
-  } else {
-    lines.push("支付完成后点击“刷新支付状态”同步到账结果。");
-  }
-  return lines.join(" ");
+  return "stripe";
 }
 
 function renderBillingUi() {
@@ -3885,18 +3825,19 @@ function renderBillingUi() {
   const stripePaymentLinkReady = Boolean(
     stripeConfig.paymentLinkReady && String(stripeConfig.paymentLink || "").trim()
   );
+  const stripePublishableReady = Boolean(currentStripePublishableKey());
   const statusText = state.billing.subscriptionStatus
     ? `（订阅状态: ${state.billing.subscriptionStatus}）`
     : "";
   const graceText = state.billing.accessState === "grace" ? " 当前处于宽限期。" : "";
-  const priceText = `￥${(Number(state.billing.priceFen || 0) / 100).toFixed(2)}`;
+  const activeBillingCycle = normalizeBillingCycle(state.billing.billingCycle);
+  const billingCycleText =
+    activeBillingCycle === "yearly" ? "（当前已开通年付）" : activeBillingCycle === "monthly" ? "（当前已开通月付）" : "";
   const advancedImportEnabled = hasFeature("advancedImport");
   const cloudSyncEnabled = hasFeature("cloudSync");
   const csvLimit = Math.max(1, Number(state.billing.features?.csvExportMaxRows || 60) || 60);
   const csvUnlimited = plan === "pro" || csvLimit >= 100000;
   const paymentsEnabled = Boolean(state.billing.paymentEnabled);
-  const enabledLabels = enabledPaymentChannelLabels(state.billing.paymentChannels);
-  const channelText = enabledLabels.length ? enabledLabels.join(" / ") : "无可用通道";
   if (els.accountModeLabel) {
     els.accountModeLabel.textContent = isRegistered ? accountName : "游客模式";
   }
@@ -3996,17 +3937,17 @@ function renderBillingUi() {
   }
   if (els.planComingSoon) {
     els.planComingSoon.hidden = true;
-    els.planComingSoon.textContent = "当前暂未开放升级。";
+    els.planComingSoon.textContent = "";
   }
   if (els.planHint) {
     if (!paymentsEnabled) {
-      els.planHint.textContent = "当前暂未开放升级。";
-    } else if (!hasAnyPaymentChannel()) {
-      els.planHint.textContent = `支付通道未开启，请配置微信支付 / 支付宝 / Stripe。${statusText}${graceText}`;
+      els.planHint.textContent = "当前支付渠道尚未配置（Stripe 测试模式未启用）。";
+    } else if (!channelEnabled("stripe")) {
+      els.planHint.textContent = "当前仅支持 Stripe 订阅，请联系管理员完成 Stripe 测试配置。";
     } else {
       const baseHint =
         accountMode === "registered"
-          ? `${plan === "pro" ? PRO_FEATURE_HINT : FREE_FEATURE_HINT} 当前价格 ${priceText}，支持 ${channelText}${statusText}${graceText}`
+          ? `${plan === "pro" ? PRO_FEATURE_HINT : FREE_FEATURE_HINT} 可选 Pro Monthly — $6/month 或 Pro Yearly — $60/year（年付更优惠）。${billingCycleText}${statusText}${graceText}`
           : `游客可先体验示例阅读与少量 AI 解释，注册后可升级并同步云端。`;
       els.planHint.textContent = baseHint;
     }
@@ -4028,12 +3969,11 @@ function renderBillingUi() {
   }
   if (els.paymentDisabledHint) {
     els.paymentDisabledHint.hidden = true;
-    els.paymentDisabledHint.textContent = "当前暂未开放升级。";
+    els.paymentDisabledHint.textContent = "Stripe 支付未配置，暂时无法升级。";
   }
   if (els.billingFlowHint) {
     els.billingFlowHint.hidden = !paymentsEnabled;
   }
-  const currentChannel = activePayChannel();
   const preferredInterval = normalizeBillingInterval(
     state.billingOrder.interval || stripeConfig.defaultInterval || "monthly"
   );
@@ -4045,43 +3985,34 @@ function renderBillingUi() {
   if (!monthlyEnabled && !yearlyEnabled) currentInterval = stripeConfig.defaultInterval || "monthly";
 
   if (paymentsEnabled) {
-    els.payChannelSelect.disabled = false;
-    els.payChannelSelect.value = currentChannel;
-    const stripeOption = els.payChannelSelect.querySelector('option[value="stripe"]');
-    const disableWechat = !channelEnabled("wechat");
-    const disableAlipay = !channelEnabled("alipay");
-    const disableStripe = !channelEnabled("stripe");
-    if (stripeOption) stripeOption.disabled = disableStripe;
-    const wechatOption = els.payChannelSelect.querySelector('option[value="wechat"]');
-    const alipayOption = els.payChannelSelect.querySelector('option[value="alipay"]');
-    if (wechatOption) wechatOption.disabled = disableWechat;
-    if (alipayOption) alipayOption.disabled = disableAlipay;
-
-    const monthlyOption = els.billingIntervalSelect.querySelector('option[value="monthly"]');
-    const yearlyOption = els.billingIntervalSelect.querySelector('option[value="yearly"]');
-    const stripeUsesPaymentLink = currentChannel === "stripe" && stripePaymentLinkReady;
-    if (monthlyOption) {
-      monthlyOption.disabled = currentChannel !== "stripe" || stripeUsesPaymentLink || !monthlyEnabled;
+    if (els.payChannelSelect) {
+      els.payChannelSelect.disabled = true;
+      els.payChannelSelect.value = "stripe";
     }
-    if (yearlyOption) {
-      yearlyOption.disabled = currentChannel !== "stripe" || stripeUsesPaymentLink || !yearlyEnabled;
+    const monthlyOption = els.billingIntervalSelect?.querySelector('option[value="monthly"]');
+    const yearlyOption = els.billingIntervalSelect?.querySelector('option[value="yearly"]');
+    if (monthlyOption) monthlyOption.disabled = stripePaymentLinkReady || !monthlyEnabled;
+    if (yearlyOption) yearlyOption.disabled = stripePaymentLinkReady || !yearlyEnabled;
+    if (els.billingIntervalSelect) {
+      els.billingIntervalSelect.value = currentInterval;
+      els.billingIntervalSelect.disabled = stripePaymentLinkReady || (!monthlyEnabled && !yearlyEnabled);
     }
-    els.billingIntervalSelect.value = currentInterval;
-    els.billingIntervalSelect.disabled = currentChannel !== "stripe" || stripeUsesPaymentLink;
     if (currentInterval !== state.billingOrder.interval) {
       updateBillingOrder({ interval: currentInterval }, false);
     }
   } else {
-    els.payChannelSelect.disabled = true;
-    els.billingIntervalSelect.disabled = true;
+    if (els.payChannelSelect) els.payChannelSelect.disabled = true;
+    if (els.billingIntervalSelect) els.billingIntervalSelect.disabled = true;
   }
 
   const canStripeCheckout =
-    channelEnabled("stripe") && Boolean(stripeConfig.checkoutReady || stripePaymentLinkReady);
-  const canSelectedChannelPay =
-    currentChannel === "stripe" ? canStripeCheckout : channelEnabled(currentChannel);
-  els.upgradeProBtn.disabled = !paymentsEnabled || plan === "pro" || !canSelectedChannelPay;
-  els.upgradeProBtn.textContent = isRegistered ? "升级 Pro" : "注册并升级";
+    channelEnabled("stripe") &&
+    Boolean(stripeConfig.checkoutReady || stripePaymentLinkReady) &&
+    (stripePaymentLinkReady || stripePublishableReady);
+  if (els.upgradeProBtn) {
+    els.upgradeProBtn.disabled = !paymentsEnabled || plan === "pro" || !canStripeCheckout;
+    els.upgradeProBtn.textContent = isRegistered ? "订阅 Pro" : "注册并订阅";
+  }
   if (els.pullSyncBtn) els.pullSyncBtn.disabled = !isRegistered;
   if (els.pushSyncBtn) els.pushSyncBtn.disabled = !isRegistered;
   // Keep upload clickable in guest mode so users receive a clear upgrade/register prompt.
@@ -4092,34 +4023,34 @@ function renderBillingUi() {
   if (els.deleteAccountBtn) els.deleteAccountBtn.disabled = !isRegistered;
 
   if (!paymentsEnabled) {
-    els.manageBillingBtn.disabled = true;
-    els.manageBillingBtn.textContent = "管理支付";
-    if (els.billingFlowHint) {
-      els.billingFlowHint.textContent = "当前暂未开放升级。";
+    if (els.manageBillingBtn) {
+      els.manageBillingBtn.disabled = true;
+      els.manageBillingBtn.textContent = "管理订阅";
     }
-  } else if (currentChannel === "stripe") {
-    const hasCustomer = Boolean(stripeConfig.customerId);
-    const canOpenPortal = Boolean(stripeConfig.portalReady && hasCustomer && !stripePaymentLinkReady);
-    els.manageBillingBtn.disabled = !isRegistered || !canOpenPortal;
-    els.manageBillingBtn.textContent = "管理订阅";
     if (els.billingFlowHint) {
-      if (stripePaymentLinkReady) {
-        els.billingFlowHint.textContent = "升级将跳转到 Stripe 支付链接。";
-      } else if (!stripeConfig.checkoutReady) {
-        els.billingFlowHint.textContent = "Stripe 未完成配置（秘钥或价格缺失），请先补全后端环境变量。";
-      } else {
-        const intervalLabel = currentInterval === "yearly" ? "年付" : "月付";
-        els.billingFlowHint.textContent = `Stripe Checkout（${intervalLabel}）自动续费；可在“管理订阅”中变更或取消。`;
-      }
+      els.billingFlowHint.textContent = "当前支付渠道尚未配置（Stripe 测试模式未启用）。";
     }
   } else {
-    const hasOrder = Boolean(state.billingOrder.orderId);
-    els.manageBillingBtn.disabled = !isRegistered || !hasOrder;
-    els.manageBillingBtn.textContent = state.billing.manualPaymentConfirmEnabled
-      ? "确认已支付（开发）"
-      : "刷新支付状态";
+    const hasCustomer = Boolean(stripeConfig.customerId);
+    const canOpenPortal = Boolean(stripeConfig.portalReady && hasCustomer && !stripePaymentLinkReady);
+    if (els.manageBillingBtn) {
+      els.manageBillingBtn.disabled = !isRegistered || !canOpenPortal;
+      els.manageBillingBtn.textContent = "管理订阅";
+    }
     if (els.billingFlowHint) {
-      els.billingFlowHint.textContent = legacyBillingFlowHint(currentChannel);
+      if (!stripePublishableReady && stripeConfig.checkoutReady && !stripePaymentLinkReady) {
+        els.billingFlowHint.textContent =
+          "Stripe 公钥未配置（STRIPE_PUBLISHABLE_KEY），请补全后重试。";
+      } else if (stripePaymentLinkReady) {
+        els.billingFlowHint.textContent =
+          "升级将跳转到 Stripe 托管支付页，支付成功后会回跳并由服务端验单。";
+      } else if (!stripeConfig.checkoutReady) {
+        els.billingFlowHint.textContent =
+          "Stripe Checkout 未就绪：请检查 STRIPE_SECRET_KEY 与月付/年付 Price ID 配置。";
+      } else {
+        const intervalLabel = currentInterval === "yearly" ? "Pro Yearly — $60/year" : "Pro Monthly — $6/month";
+        els.billingFlowHint.textContent = `即将订阅 ${intervalLabel}，支付成功后由服务端验单后才会开通。`;
+      }
     }
   }
   renderSyncUi();
@@ -4132,7 +4063,26 @@ async function refreshPaymentOptions(silent = true) {
   }
   try {
     const payload = await fetchJson("/api/payment/options", { method: "GET" });
-    updateBilling({ paymentEnabled: Boolean(payload?.enabled) });
+    const stripeOptions = payload?.stripe && typeof payload.stripe === "object" ? payload.stripe : {};
+    updateBilling({
+      paymentEnabled: Boolean(payload?.enabled),
+      appBaseUrl: String(payload?.appBaseUrl || state.billing.appBaseUrl || ""),
+      stripe: {
+        ...state.billing.stripe,
+        checkoutReady:
+          stripeOptions.checkoutReady === undefined
+            ? state.billing.stripe.checkoutReady
+            : Boolean(stripeOptions.checkoutReady),
+        paymentLinkReady:
+          stripeOptions.paymentLinkReady === undefined
+            ? state.billing.stripe.paymentLinkReady
+            : Boolean(stripeOptions.paymentLinkReady),
+        paymentLink: String(stripeOptions.paymentLink || state.billing.stripe.paymentLink || ""),
+        publishableKey: String(
+          stripeOptions.publishableKey || state.billing.stripe.publishableKey || ""
+        ).trim(),
+      },
+    });
     return true;
   } catch (error) {
     updateBilling({ paymentEnabled: false });
@@ -4178,7 +4128,7 @@ async function refreshBillingPlan(silent = false) {
 }
 
 function onPayChannelChange() {
-  updateBillingOrder({ channel: normalizePayChannel(els.payChannelSelect.value) });
+  updateBillingOrder({ channel: "stripe" });
   renderBillingUi();
 }
 
@@ -4375,7 +4325,7 @@ async function completeStripeCheckout(sessionId) {
 
 async function onUpgradeProPlan() {
   if (!state.billing.paymentEnabled) {
-    setStatus("当前暂未开放升级。", true);
+    setStatus("当前支付渠道尚未配置（Stripe 测试模式未启用）。", true);
     return;
   }
   if (state.sync.accountMode !== "registered") {
@@ -4387,20 +4337,15 @@ async function onUpgradeProPlan() {
     setStatus("API 离线，无法发起支付。", true);
     return;
   }
-  const channel = activePayChannel();
   void trackEvent("upgrade_clicked", {
-    channel,
+    channel: "stripe",
     plan: state.billing.plan,
   });
-  if (!channelEnabled(channel)) {
-    setStatus("当前支付渠道不可用。", true);
+  if (!channelEnabled("stripe")) {
+    setStatus("Stripe 支付未启用，请检查后端配置。", true);
     return;
   }
-  if (channel === "stripe") {
-    await onUpgradeProPlanByStripe();
-    return;
-  }
-  await onUpgradeProPlanByLegacyChannel(channel);
+  await onUpgradeProPlanByStripe();
 }
 
 async function onUpgradeProPlanByStripe() {
@@ -4424,18 +4369,39 @@ async function onUpgradeProPlanByStripe() {
     if (payload?.billing) {
       updateBilling(payload.billing);
     }
+    const sessionId = String(payload?.sessionId || "").trim();
     if (payload?.order) {
       updateBillingOrder({
         ...payload.order,
         channel: "stripe",
         interval,
-        sessionId: String(payload.sessionId || ""),
+        sessionId,
       });
     }
     const checkoutUrl = String(payload?.url || payload?.checkoutUrl || "").trim();
-    if (!checkoutUrl) {
-      setStatus("Stripe 支付链接为空，请检查后端配置。", true);
+    if (!sessionId && !checkoutUrl) {
+      setStatus("Stripe Checkout 会话创建失败：缺少 sessionId 与跳转链接。", true);
       return;
+    }
+    if (sessionId) {
+      try {
+        setStatus("正在跳转到 Stripe Checkout...");
+        const stripeClientInstance = await ensureStripeClient();
+        const result = await stripeClientInstance.redirectToCheckout({ sessionId });
+        if (result?.error) {
+          throw new Error(result.error.message || "Stripe Checkout 跳转失败。");
+        }
+        return;
+      } catch (redirectError) {
+        const redirectMessage = String(redirectError?.message || "");
+        if (redirectMessage.includes("STRIPE_PUBLISHABLE_KEY")) {
+          throw redirectError;
+        }
+        if (!checkoutUrl) {
+          throw redirectError;
+        }
+        setStatus("Stripe.js 跳转失败，正在使用后端 checkout_url 跳转...");
+      }
     }
     setStatus("正在跳转到 Stripe 支付页面...");
     window.location.assign(checkoutUrl);
@@ -4447,88 +4413,13 @@ async function onUpgradeProPlanByStripe() {
   }
 }
 
-async function onUpgradeProPlanByLegacyChannel(channel) {
-  try {
-    const payload = await fetchJson("/api/billing/create-order", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        userId: state.sync.userId,
-        channel,
-      }),
-    });
-    if (payload?.billing) {
-      updateBilling(payload.billing);
-    }
-    if (payload?.order) {
-      const orderId = String(payload.order.orderId || "").trim();
-      updateBillingOrder({
-        ...payload.order,
-        paymentMode: String(payload.paymentMode || ""),
-        orderStatusPath:
-          String(payload.orderStatusPath || "").trim() ||
-          (orderId
-            ? `/api/billing/order-status?orderId=${encodeURIComponent(orderId)}&userId=${encodeURIComponent(
-                state.sync.userId || ""
-              )}`
-            : ""),
-        verificationHint: String(payload.verificationHint || ""),
-        manualConfirmEnabled: Boolean(payload.manualConfirmEnabled),
-      });
-      if (payload.order.orderId) {
-        const mode = String(payload.paymentMode || "").trim().toLowerCase();
-        const modeLabel =
-          mode === "official"
-            ? "官方网关"
-            : mode === "entry_url"
-            ? "支付页链接"
-            : mode === "manual_confirm"
-            ? "开发/演示模式"
-            : "未配置";
-        const hint = String(payload.verificationHint || "").trim();
-        setStatus(
-          `订单已创建：${payload.order.orderId}（${modeLabel}）。${hint || "请完成支付后再确认到账。"}`
-        );
-      }
-    }
-    const payUrl = String(payload?.order?.payUrl || "").trim();
-    if (payUrl && !isPlaceholderPayUrl(payUrl)) {
-      window.open(payUrl, "_blank", "noopener,noreferrer");
-      return;
-    }
-    if (payUrl && isPlaceholderPayUrl(payUrl)) {
-      const message = "检测到占位支付链接，已阻止跳转。请改为配置真实网关或使用开发/演示确认流程。";
-      setStatus(message, true);
-      showToast(message, true);
-      return;
-    }
-    const manualConfirmEnabled = Boolean(
-      payload?.manualConfirmEnabled || state.billing.manualPaymentConfirmEnabled
-    );
-    if (manualConfirmEnabled) {
-      setStatus("未配置可跳转支付页。开发/演示环境可在确认到账后点击“确认已支付”。");
-      return;
-    }
-    setStatus("当前支付渠道尚未配置可用支付页，请联系管理员。", true);
-  } catch (error) {
-    if (error?.payload?.billing) {
-      updateBilling(error.payload.billing);
-    }
-    setStatus(`发起支付失败：${error.message}`, true);
-  }
-}
-
 async function onOpenBillingPortal() {
   onSyncUserChange({ refreshBilling: false });
   if (!state.apiOnline) {
     setStatus("API 离线，无法确认支付状态。", true);
     return;
   }
-  if (activePayChannel() === "stripe") {
-    await onOpenStripeBillingPortal();
-    return;
-  }
-  await onOpenLegacyBillingPortal();
+  await onOpenStripeBillingPortal();
 }
 
 async function onOpenStripeBillingPortal() {
@@ -4555,58 +4446,6 @@ async function onOpenStripeBillingPortal() {
       updateBilling(error.payload.billing);
     }
     setStatus(`打开 Stripe 订阅管理页失败：${error.message}`, true);
-  }
-}
-
-async function onOpenLegacyBillingPortal() {
-  if (!state.billingOrder.orderId) {
-    setStatus("请先创建支付订单，再确认支付状态。", true);
-    return;
-  }
-  try {
-    const statusPayload = await fetchJson(
-      `/api/billing/order-status?orderId=${encodeURIComponent(state.billingOrder.orderId)}&userId=${encodeURIComponent(
-        state.sync.userId
-      )}`,
-      { method: "GET" }
-    );
-    if (statusPayload?.order) {
-      updateBillingOrder(statusPayload.order);
-    }
-    if (statusPayload?.billing) {
-      updateBilling(statusPayload.billing);
-    }
-
-    if (String(statusPayload?.order?.status || "").toLowerCase() === "paid") {
-      setStatus("支付已确认，Pro 套餐已生效。");
-      return;
-    }
-    if (!state.billing.manualPaymentConfirmEnabled) {
-      const orderId = String(state.billingOrder.orderId || "").trim();
-      setStatus(`订单 ${orderId} 尚未到账，请完成支付后再点“刷新支付状态”。`);
-      return;
-    }
-
-    setStatus("正在执行开发/演示支付确认...");
-    const confirmPayload = await fetchJson("/api/billing/confirm-paid", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        orderId: state.billingOrder.orderId,
-      }),
-    });
-    if (confirmPayload?.order) {
-      updateBillingOrder(confirmPayload.order);
-    }
-    if (confirmPayload?.billing) {
-      updateBilling(confirmPayload.billing);
-    }
-    setStatus("支付已确认，Pro 套餐已开通。");
-  } catch (error) {
-    if (error?.payload?.billing) {
-      updateBilling(error.payload.billing);
-    }
-    setStatus(`确认支付失败：${error.message}`, true);
   }
 }
 

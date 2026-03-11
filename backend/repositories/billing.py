@@ -16,6 +16,15 @@ from backend.config import (
 from backend.repositories.app_db import AppDatabase, now_ms
 
 
+def normalize_billing_cycle(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"monthly", "month"}:
+        return "monthly"
+    if raw in {"yearly", "year", "annual"}:
+        return "yearly"
+    return ""
+
+
 class BillingStore:
     def __init__(self, db_path: Path, legacy_path: Path | None = None) -> None:
         self.db = AppDatabase(db_path)
@@ -66,8 +75,9 @@ class BillingStore:
                           plan_expire_at,
                           subscription_status,
                           stripe_customer_id,
-                          stripe_subscription_id
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                          stripe_subscription_id,
+                          billing_cycle
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             user_key,
@@ -82,6 +92,7 @@ class BillingStore:
                             record["subscriptionStatus"],
                             record["stripeCustomerId"],
                             record["stripeSubscriptionId"],
+                            record["billingCycle"],
                         ),
                     )
             self._legacy_migrated = True
@@ -105,6 +116,7 @@ class BillingStore:
             "subscriptionStatus": normalize_subscription_status(source.get("subscriptionStatus")),
             "stripeCustomerId": str(source.get("stripeCustomerId", "") or "").strip(),
             "stripeSubscriptionId": str(source.get("stripeSubscriptionId", "") or "").strip(),
+            "billingCycle": normalize_billing_cycle(source.get("billingCycle")),
             "graceUntilAt": int(source.get("graceUntilAt", 0) or 0),
             "paymentFailedAt": int(source.get("paymentFailedAt", 0) or 0),
             "billingState": str(source.get("billingState", "") or "").strip().lower(),
@@ -130,6 +142,7 @@ class BillingStore:
                   subscription_status,
                   stripe_customer_id,
                   stripe_subscription_id,
+                  billing_cycle,
                   grace_until_at,
                   payment_failed_at,
                   billing_state
@@ -154,6 +167,7 @@ class BillingStore:
                 "subscriptionStatus": row["subscription_status"],
                 "stripeCustomerId": row["stripe_customer_id"],
                 "stripeSubscriptionId": row["stripe_subscription_id"],
+                "billingCycle": row["billing_cycle"],
                 "graceUntilAt": row["grace_until_at"],
                 "paymentFailedAt": row["payment_failed_at"],
                 "billingState": row["billing_state"],
@@ -177,6 +191,7 @@ class BillingStore:
             "subscriptionStatus": record["subscriptionStatus"],
             "stripeCustomerId": record["stripeCustomerId"],
             "stripeSubscriptionId": record["stripeSubscriptionId"],
+            "billingCycle": record["billingCycle"],
             "graceUntilAt": record["graceUntilAt"],
             "paymentFailedAt": record["paymentFailedAt"],
             "billingState": record["billingState"],
@@ -217,6 +232,7 @@ class BillingStore:
         plan_expire_at: int | None = None,
         stripe_customer_id: str = "",
         stripe_subscription_id: str = "",
+        billing_cycle: str | None = None,
         grace_until_at: int | None = None,
         payment_failed_at: int | None = None,
         billing_state: str | None = None,
@@ -238,6 +254,7 @@ class BillingStore:
             "subscriptionStatus": current["subscriptionStatus"],
             "stripeCustomerId": current["stripeCustomerId"],
             "stripeSubscriptionId": current["stripeSubscriptionId"],
+            "billingCycle": current.get("billingCycle", ""),
             "graceUntilAt": current.get("graceUntilAt", 0),
             "paymentFailedAt": current.get("paymentFailedAt", 0),
             "billingState": current.get("billingState", ""),
@@ -258,6 +275,8 @@ class BillingStore:
             record["stripeCustomerId"] = str(stripe_customer_id).strip()
         if stripe_subscription_id:
             record["stripeSubscriptionId"] = str(stripe_subscription_id).strip()
+        if billing_cycle is not None:
+            record["billingCycle"] = normalize_billing_cycle(billing_cycle)
         if grace_until_at is not None:
             record["graceUntilAt"] = max(0, int(grace_until_at or 0))
         if payment_failed_at is not None:
@@ -281,10 +300,11 @@ class BillingStore:
                   subscription_status,
                   stripe_customer_id,
                   stripe_subscription_id,
+                  billing_cycle,
                   grace_until_at,
                   payment_failed_at,
                   billing_state
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                   plan_name = excluded.plan_name,
                   plan = excluded.plan,
@@ -297,6 +317,7 @@ class BillingStore:
                   subscription_status = excluded.subscription_status,
                   stripe_customer_id = excluded.stripe_customer_id,
                   stripe_subscription_id = excluded.stripe_subscription_id,
+                  billing_cycle = excluded.billing_cycle,
                   grace_until_at = excluded.grace_until_at,
                   payment_failed_at = excluded.payment_failed_at,
                   billing_state = excluded.billing_state
@@ -314,6 +335,7 @@ class BillingStore:
                     record["subscriptionStatus"],
                     record["stripeCustomerId"],
                     record["stripeSubscriptionId"],
+                    record["billingCycle"],
                     record["graceUntilAt"],
                     record["paymentFailedAt"],
                     record["billingState"],

@@ -121,6 +121,7 @@ export const DEFAULT_BILLING = {
   source: "manual",
   entitlementPlan: "free",
   subscriptionStatus: "",
+  billingCycle: "",
   lastPaidChannel: "",
   lastOrderId: "",
   planExpireAt: 0,
@@ -129,6 +130,7 @@ export const DEFAULT_BILLING = {
   billingState: "",
   accessState: "free",
   accountMode: "guest",
+  appBaseUrl: "",
   features: {
     advancedImport: false,
     cloudSync: false,
@@ -150,6 +152,7 @@ export const DEFAULT_BILLING = {
     portalReady: false,
     paymentLinkReady: false,
     paymentLink: "",
+    publishableKey: "",
     paymentMode: "none",
     intervals: {
       monthly: false,
@@ -206,7 +209,7 @@ export const state = {
   billingOrder: loadJSON(STORAGE_KEYS.billingOrder, {
     orderId: "",
     status: "",
-    channel: "wechat",
+    channel: "stripe",
     interval: "monthly",
     paymentMode: "",
     payUrl: "",
@@ -310,7 +313,6 @@ export const els = {
   planLabel: document.getElementById("planLabel"),
   planHint: document.getElementById("planHint"),
   planComingSoon: document.getElementById("planComingSoon"),
-  joinWaitlistBtn: document.getElementById("joinWaitlistBtn"),
   planBenefitList: document.getElementById("planBenefitList"),
   benefitAdvancedImport: document.getElementById("benefitAdvancedImport"),
   benefitCloudSync: document.getElementById("benefitCloudSync"),

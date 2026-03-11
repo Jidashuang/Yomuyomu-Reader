@@ -1,12 +1,7 @@
 # YomuYomu 日语原著阅读器（MVP/Beta）
 
 ## 项目简介
-YomuYomu 是一个面向日语原著阅读学习的 Web 阅读器 MVP/Beta。项目已经实现核心阅读流程（导入 -> 阅读 -> 点词 -> 复习/进度），并提供前后端一体化运行方式。
-
-当前状态定位：
-- 已实现核心阅读体验与基础学习工具。
-- 已接入词典、分词、同步、计费等基础能力。
-- 部分高级能力仍在持续完善（如支付渠道完整化、数据持久化策略、运营流程）。
+YomuYomu 是一个面向日语原著阅读学习的 Web 阅读器。项目已提供前后端一体运行方式，支持从导入、阅读、点词到账号同步的完整学习流程。
 
 ## 核心功能
 - 多格式导入：`TXT`、`EPUB`、`PDF`、`MOBI`
@@ -15,7 +10,7 @@ YomuYomu 是一个面向日语原著阅读学习的 Web 阅读器 MVP/Beta。项
 - 难度辅助：JLPT 级别标注、难词速览、词频统计
 - 学习记录：生词本、批注、书签、基础复习能力
 - 账户与同步：基础账号流程、阅读数据同步接口
-- 订阅基础：Free/Pro 功能门禁、Stripe/微信/支付宝订单闭环（开发可手动确认，生产需官方网关）
+- 订阅与支付：Free/Pro 门禁 + Stripe Checkout（测试模式）闭环
 
 ## 技术栈
 - 前端：Vanilla JavaScript + HTML + CSS
@@ -47,9 +42,24 @@ npm run dev
 
 5. 打开浏览器访问：`http://127.0.0.1:8000`
 
-支付联调提示：
-- 本地开发可通过 `BILLING_ALLOW_MANUAL_PAYMENT_CONFIRM=1` 验证“下单 -> 查单 -> 确认到账 -> 套餐生效”闭环。
-- 生产环境请配置微信/支付宝官方参数并关闭手动确认（`BILLING_ALLOW_MANUAL_PAYMENT_CONFIRM=0`）。
+## 本地支付测试（Stripe 测试模式）
+1. 在 `.env` 填写测试配置：
+- `APP_BASE_URL=http://127.0.0.1:8000`
+- `STRIPE_PAY_ENABLED=1`
+- `STRIPE_PUBLISHABLE_KEY=pk_test_...`（前端公开密钥）
+- `STRIPE_SECRET_KEY=sk_test_...`
+- `STRIPE_PRICE_ID_MONTHLY=price_xxx`（Pro Monthly — $6/month）
+- `STRIPE_PRICE_ID_YEARLY=price_xxx`（Pro Yearly — $60/year）
+
+2. 启动服务后，注册账号并在套餐区选择月付或年付，然后点击“订阅 Pro”。
+3. 前端会调用 `/api/billing/create-checkout-session`，并使用 `STRIPE_PUBLISHABLE_KEY` 跳转 Stripe Checkout 测试支付页。
+4. 使用测试卡支付：
+- 卡号：`4242 4242 4242 4242`
+- 有效期：任意未来日期
+- CVC：任意 3 位
+5. 支付成功后会回到 `/billing-success.html`，该页面会调用后端完成验单并同步套餐状态。
+6. 支付取消会回到 `/billing-cancel.html`。
+7. 只有 `/api/billing/checkout-complete` 验单成功后，用户才会被标记为 `plan=pro` 与对应 `billing_cycle`。
 
 ## 运行测试
 ```bash
@@ -74,3 +84,4 @@ npx playwright install
 - [部署说明](./docs/deployment.md)
 - [词典与词表](./docs/dictionary.md)
 - [计费与支付](./docs/billing.md)
+- [Stripe 测试模式](./docs/stripe.md)

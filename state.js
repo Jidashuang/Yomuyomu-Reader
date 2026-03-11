@@ -95,11 +95,19 @@ export function normalizePayChannel(value) {
   const raw = String(value || "").toLowerCase();
   if (raw === "stripe") return "stripe";
   if (raw === "alipay") return "alipay";
-  return "wechat";
+  if (raw === "wechat") return "wechat";
+  return "stripe";
 }
 
 export function normalizeBillingInterval(value) {
   return String(value || "").toLowerCase() === "yearly" ? "yearly" : "monthly";
+}
+
+export function normalizeBillingCycle(value) {
+  const raw = String(value || "").toLowerCase();
+  if (raw === "monthly") return "monthly";
+  if (raw === "yearly") return "yearly";
+  return "";
 }
 
 export function normalizeBilling(raw) {
@@ -137,6 +145,7 @@ export function normalizeBilling(raw) {
     plan: normalizePlan(source.plan),
     source: String(source.source || DEFAULT_BILLING.source),
     subscriptionStatus: String(source.subscriptionStatus || ""),
+    billingCycle: normalizeBillingCycle(source.billingCycle || ""),
     lastPaidChannel: source.lastPaidChannel ? normalizePayChannel(source.lastPaidChannel) : "",
     lastOrderId: String(source.lastOrderId || ""),
     planExpireAt: Number(source.planExpireAt || 0),
@@ -145,6 +154,7 @@ export function normalizeBilling(raw) {
     billingState: String(source.billingState || ""),
     accessState: String(source.accessState || "free"),
     accountMode: String(source.accountMode || "guest"),
+    appBaseUrl: String(source.appBaseUrl || DEFAULT_BILLING.appBaseUrl || ""),
     features: {
       advancedImport: Boolean(mergedFeatures.advancedImport),
       cloudSync: Boolean(mergedFeatures.cloudSync),
@@ -170,6 +180,13 @@ export function normalizeBilling(raw) {
         sourceStripe.portalReady === undefined
           ? DEFAULT_BILLING.stripe.portalReady
           : Boolean(sourceStripe.portalReady),
+      paymentLinkReady:
+        sourceStripe.paymentLinkReady === undefined
+          ? DEFAULT_BILLING.stripe.paymentLinkReady
+          : Boolean(sourceStripe.paymentLinkReady),
+      paymentLink: String(sourceStripe.paymentLink || "").trim(),
+      publishableKey: String(sourceStripe.publishableKey || DEFAULT_BILLING.stripe.publishableKey || ""),
+      paymentMode: String(sourceStripe.paymentMode || DEFAULT_BILLING.stripe.paymentMode || "none"),
       intervals: {
         monthly: Boolean(mergedStripeIntervals.monthly),
         yearly: Boolean(mergedStripeIntervals.yearly),

@@ -390,15 +390,20 @@ textarea {
   margin-top: 0.45rem;
 }
 
-.plan-lite button {
-  margin-top: 0.65rem;
-}
-
 .plan-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+}
+
+.plan-pricing-list {
+  margin: 0.45rem 0 0;
+  padding-left: 1.1rem;
+  color: #5f3f2d;
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.82rem;
 }
 
 .plan-pill {
