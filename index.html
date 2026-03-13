@@ -326,7 +326,7 @@
                     <section id="planCard" class="plan-card">
                       <div id="planLiteBlock" class="plan-lite" hidden>
                         <h4>Stripe 订阅未配置</h4>
-                        <p class="meta">当前环境尚未启用 Stripe 测试模式，请联系管理员完成配置。</p>
+                        <p class="meta">当前环境尚未启用 Stripe，请联系管理员完成配置。</p>
                       </div>
                       <div id="planFullBlock">
                         <div class="plan-head">
@@ -356,7 +356,7 @@
                         <div id="paymentControls">
                           <label for="payChannelSelect">支付渠道</label>
                           <select id="payChannelSelect">
-                            <option value="stripe">Stripe Checkout（测试模式）</option>
+                            <option value="stripe">Stripe Checkout</option>
                           </select>
                           <label for="billingIntervalSelect">订阅周期</label>
                           <select id="billingIntervalSelect">
@@ -385,104 +385,79 @@
 
     <section class="faq-section" id="faq" aria-labelledby="faqTitle">
       <div class="faq-header">
-        <h2 id="faqTitle">常见问题</h2>
-        <p>关于 YomuYomu，你可能想知道这些</p>
+        <h2 id="faqTitle">FAQ</h2>
+        <p>关于 YomuYomu 的核心问题</p>
       </div>
       <div class="faq-list">
         <details class="faq-item">
           <summary class="faq-question">
-            <span>YomuYomu 支持哪些文件格式？</span>
+            <span>YomuYomu 支持哪些内容？</span>
             <span class="faq-icon" aria-hidden="true">▾</span>
           </summary>
           <p class="faq-answer">
-            YomuYomu 当前支持 TXT、EPUB、PDF。你可以直接上传文件并开始阅读。一般来说，EPUB 和 TXT
-            最适合连续阅读，PDF 更适合文章、论文和排版较复杂的内容。
+            YomuYomu 面向日语原著阅读，支持 TXT、EPUB、PDF（Pro 支持更完整导入），并提供点词、词典、句子解释、生词与批注等学习功能。
           </p>
         </details>
 
         <details class="faq-item">
           <summary class="faq-question">
-            <span>我需要注册才能使用吗？</span>
+            <span>如何导入书籍开始阅读？</span>
             <span class="faq-icon" aria-hidden="true">▾</span>
           </summary>
           <p class="faq-answer">
-            不需要。你可以先用游客模式体验示例内容，也可以直接上传自己的文件开始阅读。如果你希望保存阅读进度、同步学习数据，或者未来升级
-            Pro，再注册账号即可。
+            点击顶部“导入书籍”上传文件，或先用“示例书籍”体验。导入后可在左侧目录切章、在中间阅读区点词查义，并把词和批注保存到学习记录。
           </p>
         </details>
 
         <details class="faq-item">
           <summary class="faq-question">
-            <span>游客模式和注册账号有什么区别？</span>
+            <span>付费与订阅怎么计算？</span>
             <span class="faq-icon" aria-hidden="true">▾</span>
           </summary>
           <p class="faq-answer">
-            游客模式适合快速体验：直接开始阅读、点词查询、使用有限次数的 AI 解释。注册账号后可以获得更完整的体验，例如保存阅读进度、多设备同步、生词与批注的长期保存，以及未来升级
-            Pro。
+            基础版可免费使用；Pro 通过 Stripe 订阅，提供月付与年付选项。支付完成后会回跳并由服务端验单，生效状态会显示在“套餐与支付”面板。
           </p>
         </details>
 
         <details class="faq-item">
           <summary class="faq-question">
-            <span>AI 句子解释是怎么工作的？</span>
+            <span>我的数据和隐私如何处理？</span>
             <span class="faq-icon" aria-hidden="true">▾</span>
           </summary>
           <p class="faq-answer">
-            当你点击一句话时，YomuYomu 会调用 AI 模型，返回句子翻译、语法解释、词汇说明和难度提示（如果可用）。它的目标不是替代翻译，而是帮助你更快理解原文，并继续读下去。
+            你的阅读数据仅用于个人学习与功能实现，不会公开展示给其他用户。你可随时删除书籍或账号，系统会按删除动作清理对应数据。
           </p>
         </details>
 
         <details class="faq-item">
           <summary class="faq-question">
-            <span>AI 解释免费吗？</span>
+            <span>支持多设备同步吗？</span>
             <span class="faq-icon" aria-hidden="true">▾</span>
           </summary>
           <p class="faq-answer">
-            可以体验，但免费用户有每日使用限制。这样做是为了控制运行成本，同时保证每个人都能先体验 AI 阅读辅助。未来 Pro 用户会获得更高额度或更多 AI
-            能力。
+            支持。注册账号后可在“云端同步”中手动上传或拉取阅读进度、生词和批注，在不同设备间接续阅读。
           </p>
         </details>
 
         <details class="faq-item">
           <summary class="faq-question">
-            <span>上传的文件会被公开吗？</span>
+            <span>点词词典和学习功能有哪些？</span>
             <span class="faq-icon" aria-hidden="true">▾</span>
           </summary>
           <p class="faq-answer">
-            不会。你上传的文件只会用于你自己的阅读和处理，不会公开展示给其他用户。如果你删除文件或删除账号，相关数据也会被清除。如果你在意隐私，建议不要上传特别敏感的个人或商业文档。
+            阅读时可点词查看词条、读音和释义，加入生词本并添加批注；同时支持难词速览、词频统计与复习节奏记录，方便长期积累。
           </p>
         </details>
 
         <details class="faq-item">
           <summary class="faq-question">
-            <span>我的阅读进度会保存吗？</span>
+            <span>必须全程联网才能用吗？</span>
             <span class="faq-icon" aria-hidden="true">▾</span>
           </summary>
           <p class="faq-answer">
-            游客模式下，进度通常只保存在当前浏览器。注册账号后，阅读进度和部分学习数据可以保存到云端，方便你在不同设备继续阅读。
+            基础阅读和本地学习记录可在离线场景继续使用；联网后可获得更完整的分词/词典能力，并可使用账号、支付与云同步相关功能。
           </p>
         </details>
-
-        <details class="faq-item">
-          <summary class="faq-question">
-            <span>为什么有些词可以点，有些词不可以？</span>
-            <span class="faq-icon" aria-hidden="true">▾</span>
-          </summary>
-          <p class="faq-answer">
-            YomuYomu 会优先对识别到的日语词汇进行分词和标注。在不同格式、不同文本排版下，分词效果可能会有差异，尤其是复杂 PDF 或特殊排版内容中。我们会持续改进识别和点词体验。
-          </p>
-        </details>
-
-        <details class="faq-item">
-          <summary class="faq-question">
-            <span>YomuYomu 适合什么水平的学习者？</span>
-            <span class="faq-icon" aria-hidden="true">▾</span>
-          </summary>
-          <p class="faq-answer">
-            YomuYomu 最适合已经有一定基础、准备开始阅读真实日语内容的学习者。如果你已经在尝试阅读小说、轻小说、散文、新闻或文章，这个工具会特别有帮助。
-          </p>
-        </details>
-
       </div>
     </section>
 
@@ -558,6 +533,7 @@
 
     <input id="userIdInput" class="user-input account-hidden-input" type="text" value="" placeholder="当前账号" />
     <div id="appToast" class="app-toast" hidden aria-live="polite"></div>
+    <script type="module" src="services/bootstrap.js"></script>
     <script type="module" src="app.js"></script>
   </body>
 </html>

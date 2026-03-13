@@ -101,6 +101,63 @@ async function clickSentence(page, testId, charIndex = 0) {
   await chars.nth(targetIndex).click();
 }
 
+test("billing checkout callback updates plan on success page", async ({ page }) => {
+  const userId = makeUser("billing");
+  const accountToken = `acct-token-${Date.now()}`;
+  let callbackCount = 0;
+  let callbackPayload = null;
+  let callbackToken = "";
+
+  await page.route("**/api/billing/checkout-complete", async (route) => {
+    callbackCount += 1;
+    callbackToken = route.request().headers()["x-account-token"] || "";
+    callbackPayload = JSON.parse(route.request().postData() || "{}");
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        billing: {
+          userId,
+          plan: "pro",
+          billingCycle: "monthly",
+        },
+        billingCycle: "monthly",
+        order: {
+          orderId: "order-callback-1",
+        },
+        session: {
+          id: "cs_test_callback_123",
+          status: "complete",
+          paymentStatus: "paid",
+        },
+      }),
+    });
+  });
+
+  await page.addInitScript(({ id, token }) => {
+    localStorage.setItem(
+      "yomuyomu_sync_v2",
+      JSON.stringify({
+        userId: id,
+        accountToken: token,
+      })
+    );
+  }, { id: userId, token: accountToken });
+
+  await page.goto("/billing-success.html?session_id=cs_test_callback_123");
+  await expect(page.locator("#statusText")).toContainText("支付成功，订阅状态已同步。");
+  await expect(page.locator("#detailText")).toContainText("当前套餐：Pro");
+  await expect(page.locator("#detailText")).toContainText("月付");
+
+  expect(callbackCount).toBe(1);
+  expect(callbackPayload).toEqual({
+    sessionId: "cs_test_callback_123",
+    userId,
+  });
+  expect(callbackToken).toBe(accountToken);
+});
+
 test("first visit opens sample book and prefetched next chapter", async ({ page }) => {
   const nextChapterResponse = page.waitForResponse(
     (response) =>
@@ -128,6 +185,37 @@ test("clicking a highlighted sample word shows popover details", async ({ page }
   await expect(page.locator("#selectedWord")).toHaveText("改札");
   await expect(page.locator("#selectedReading")).not.toHaveText("-");
   await expect(page.getByTestId("word-meaning")).not.toContainText("在阅读区拖选");
+});
+
+test("dictionary lookup happy path uses api result", async ({ page }) => {
+  await bootWithUser(page, makeUser("dict"));
+  let lookupPayload = null;
+
+  await page.route("**/api/dict/lookup", async (route) => {
+    lookupPayload = JSON.parse(route.request().postData() || "{}");
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        entries: [
+          {
+            surface: "改札",
+            lemma: "改札",
+            reading: "かいさつ",
+            pos: "名词",
+            gloss_zh: "检票口",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.getByTestId("paragraph-sample-ch-1-1").locator(".jp-char", { hasText: "改" }).click();
+  await expect(page.locator("#selectedWord")).toHaveText("改札");
+  await expect(page.getByTestId("word-meaning")).toContainText("检票口");
+  await expect(page.locator("#dictLink")).toHaveAttribute("href", /改札|%E6%94%B9%E6%9C%AD/);
+  expect(String(lookupPayload?.surface || "")).toContain("改");
 });
 
 test("clicking the same sentence twice uses cached AI explain", async ({ page }) => {
@@ -236,6 +324,37 @@ test("duplicate imports reuse the same analyzed book", async ({ page }) => {
   const secondBookId = await page.evaluate(() => JSON.parse(localStorage.getItem("yomuyomu_book_v3")).id);
 
   expect(secondBookId).toBe(firstBookId);
+});
+
+test("reader import open and restore progress after reload", async ({ page }) => {
+  await bootWithUser(page, makeUser("restore"));
+  await registerAccount(page, makeUser("acct"));
+
+  await importTextBook(
+    page,
+    "restore-progress.txt",
+    "第一章 春の駅\n春は静かな駅です。\n\n第二章 夏の窓\n夏は明るい窓です。",
+    "restore-progress"
+  );
+
+  const progressSaved = page.waitForResponse(
+    (response) =>
+      response.url().includes("/api/books/") &&
+      response.url().includes("/progress") &&
+      response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "第二章 夏の窓" }).click();
+  await progressSaved;
+
+  await expect(page.locator("#chapterTitle")).toContainText("第二章 夏の窓");
+  await expect(page.locator("#chapterProgress")).toContainText("章节 2 / 2");
+  await expect(page.getByTestId("paragraph-ch-2-0")).toBeVisible();
+
+  await page.reload();
+  await expect(page.locator("#bookTitle")).toContainText("restore-progress");
+  await expect(page.locator("#chapterTitle")).toContainText("第二章 夏の窓");
+  await expect(page.locator("#chapterProgress")).toContainText("章节 2 / 2");
+  await expect(page.getByTestId("paragraph-ch-2-0")).toBeVisible();
 });
 
 test("unicode and full-width punctuation do not break click mapping", async ({ page }) => {

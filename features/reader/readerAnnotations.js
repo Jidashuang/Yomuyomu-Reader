@@ -1,26 +1,37 @@
-import { DAY_MS, els, state, STORAGE_KEYS, saveJSON } from "./readerStore.js";
-import { findExistingVocabEntry } from "./services/localDictionaryLookup.js";
+import { findExistingVocabEntry } from "../../services/localDictionaryLookup.js";
 
-export function createVocabModule(deps) {
+export function createReaderAnnotations({
+  state,
+  els,
+  STORAGE_KEYS,
+  DAY_MS,
+  saveJSON,
+  setStatus,
+  appendListEmpty,
+  makeId,
+  chapterIndexById,
+  getChapterById,
+  syncReaderState,
+  persistCurrentChapterState,
+  ensureRenderedThrough,
+  ensureChapterLoaded,
+  renderBookMeta,
+  renderChapterList,
+  renderReader,
+  renderStats,
+  markSelection,
+  renderLookupPanel,
+  syncReadingProgress,
+  requestAnalyze,
+  trackEvent,
+  formatDate,
+  csvEscape,
+  exportVocabByUser,
+  hasFeature,
+  openToolsSection,
+  setRightPanelTab,
+}) {
   const readerSessionStore = state.readerStore?.sessionState;
-  const {
-    appendListEmpty,
-    chapterIndexById,
-    csvEscape,
-    ensureRenderedThrough,
-    formatDate,
-    getChapterById,
-    makeId,
-    markSelection,
-    renderBookMeta,
-    renderChapterList,
-    renderLookupPanel,
-    renderReader,
-    renderStats,
-    requestAnalyze,
-    setRightPanelTab,
-    setStatus,
-  } = deps;
 
   function setCurrentChapterIndex(chapterIndex) {
     if (readerSessionStore?.setCurrentChapter) {
@@ -41,6 +52,16 @@ export function createVocabModule(deps) {
     if (Object.prototype.hasOwnProperty.call(partial, "selectedRange")) {
       state.selectedRange = partial.selectedRange;
     }
+  }
+
+  function getNoteRanges(chapterId, paraIndex) {
+    return state.notes
+      .filter((note) => note.chapterId === chapterId && note.paraIndex === paraIndex)
+      .map((note) => ({ start: note.start, end: note.end, word: note.word }));
+  }
+
+  function findRangeHit(ranges, index) {
+    return ranges.find((item) => index >= item.start && index < item.end);
   }
 
   function onAddWord() {
@@ -81,10 +102,15 @@ export function createVocabModule(deps) {
     renderVocab();
     renderReader();
     requestAnalyze(true);
+    void trackEvent("vocab_added", {
+      word: nextWord,
+      lemma: nextLemma,
+    });
   }
 
   function onAddNoteClick() {
     if (!state.selected) return;
+    openToolsSection();
     setRightPanelTab("notes", false);
     els.noteInput.value = `${state.selected.word}: `;
     els.noteInput.focus();
@@ -170,7 +196,7 @@ export function createVocabModule(deps) {
     }
 
     if (action === "jump") {
-      jumpToPosition(note.chapterId, note.paraIndex, note.start, note.end, note.word, note.lemma);
+      void jumpToPosition(note.chapterId, note.paraIndex, note.start, note.end, note.word, note.lemma);
     }
   }
 
@@ -179,8 +205,8 @@ export function createVocabModule(deps) {
     const chapterIndex = state.selectedRange
       ? chapterIndexById(chapterId)
       : Number.isFinite(state.lastCursor.chapterIndex)
-        ? state.lastCursor.chapterIndex
-        : state.currentChapter;
+      ? state.lastCursor.chapterIndex
+      : state.currentChapter;
     const chapter = getChapterById(chapterId) || state.book?.chapters?.[chapterIndex];
     if (!chapter) return;
 
@@ -204,34 +230,37 @@ export function createVocabModule(deps) {
   }
 
   function renderBookmarks() {
-    els.bookmarkList.textContent = "";
-    if (!state.bookmarks.length) {
-      appendListEmpty(els.bookmarkList, "暂无书签");
-      return;
-    }
-    state.bookmarks.slice(0, 80).forEach((item) => {
-      const li = document.createElement("li");
-      li.className = "simple-item";
-      const title = document.createElement("strong");
-      title.textContent = item.excerpt;
-      const meta = document.createElement("p");
-      meta.className = "meta";
-      meta.textContent = `章节 ${Number(item.chapterIndex) + 1}`;
+    const containers = [els.bookmarkList, els.notesBookmarkList].filter(Boolean);
+    containers.forEach((listEl) => {
+      listEl.textContent = "";
+      if (!state.bookmarks.length) {
+        appendListEmpty(listEl, "暂无书签");
+        return;
+      }
+      state.bookmarks.slice(0, 80).forEach((item) => {
+        const li = document.createElement("li");
+        li.className = "simple-item";
+        const title = document.createElement("strong");
+        title.textContent = item.excerpt;
+        const meta = document.createElement("p");
+        meta.className = "meta";
+        meta.textContent = `章节 ${Number(item.chapterIndex) + 1}`;
 
-      const jumpBtn = document.createElement("button");
-      jumpBtn.className = "tiny-btn";
-      jumpBtn.dataset.action = "jump";
-      jumpBtn.dataset.bookmarkId = item.id;
-      jumpBtn.textContent = "跳转";
+        const jumpBtn = document.createElement("button");
+        jumpBtn.className = "tiny-btn";
+        jumpBtn.dataset.action = "jump";
+        jumpBtn.dataset.bookmarkId = item.id;
+        jumpBtn.textContent = "跳转";
 
-      const removeBtn = document.createElement("button");
-      removeBtn.className = "tiny-btn";
-      removeBtn.dataset.action = "remove";
-      removeBtn.dataset.bookmarkId = item.id;
-      removeBtn.textContent = "删除";
+        const removeBtn = document.createElement("button");
+        removeBtn.className = "tiny-btn";
+        removeBtn.dataset.action = "remove";
+        removeBtn.dataset.bookmarkId = item.id;
+        removeBtn.textContent = "删除";
 
-      li.append(title, meta, jumpBtn, removeBtn);
-      els.bookmarkList.appendChild(li);
+        li.append(title, meta, jumpBtn, removeBtn);
+        listEl.appendChild(li);
+      });
     });
   }
 
@@ -250,18 +279,26 @@ export function createVocabModule(deps) {
       return;
     }
     if (action === "jump") {
-      jumpToPosition(bookmark.chapterId, bookmark.paraIndex, bookmark.charIndex, bookmark.charIndex + 1);
+      void jumpToPosition(bookmark.chapterId, bookmark.paraIndex, bookmark.charIndex, bookmark.charIndex + 1);
     }
   }
 
-  function jumpToPosition(chapterId, paraIndex, start, end, word = "", lemma = "") {
+  async function jumpToPosition(chapterId, paraIndex, start, end, word = "", lemma = "") {
     if (!state.book || !state.book.chapters.length) return;
     const idx = state.book.chapters.findIndex((item) => item.id === chapterId);
     if (idx >= 0) {
       setCurrentChapterIndex(idx);
+      syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
       ensureRenderedThrough(idx);
     }
-    saveJSON(STORAGE_KEYS.currentChapter, state.currentChapter);
+    persistCurrentChapterState();
+    if (idx >= 0) {
+      try {
+        await ensureChapterLoaded(idx, { prefetch: false });
+      } catch {
+        // Keep local state if remote chapter load fails.
+      }
+    }
     renderBookMeta();
     renderChapterList();
     renderReader();
@@ -284,7 +321,6 @@ export function createVocabModule(deps) {
       },
     });
     markSelection();
-    setRightPanelTab("lookup", false);
     renderLookupPanel();
 
     const para = els.readerContent.querySelector(
@@ -293,6 +329,21 @@ export function createVocabModule(deps) {
     if (para) {
       para.scrollIntoView({ behavior: "smooth", block: "center" });
     }
+    void syncReadingProgress({
+      chapterId,
+      chapterIndex: idx >= 0 ? idx : state.currentChapter,
+      paraIndex,
+      charIndex: start,
+    });
+  }
+
+  function tinyBtn(label, action, word) {
+    const button = document.createElement("button");
+    button.className = "tiny-btn";
+    button.textContent = label;
+    button.dataset.action = action;
+    button.dataset.word = word;
+    return button;
   }
 
   function renderVocab() {
@@ -337,15 +388,6 @@ export function createVocabModule(deps) {
     renderStats();
   }
 
-  function tinyBtn(label, action, word) {
-    const button = document.createElement("button");
-    button.className = "tiny-btn";
-    button.textContent = label;
-    button.dataset.action = action;
-    button.dataset.word = word;
-    return button;
-  }
-
   function onVocabAction(event) {
     const actionBtn = event.target.closest("[data-action][data-word]");
     if (!actionBtn) return;
@@ -373,11 +415,24 @@ export function createVocabModule(deps) {
     requestAnalyze(true);
   }
 
-  function exportVocabCsv() {
-    if (!state.vocab.length) return;
+  async function exportVocabCsv() {
+    let sourceVocab = state.vocab;
+    if (state.sync.accountMode === "registered" && hasFeature("cloudSync")) {
+      try {
+        const payload = await exportVocabByUser(state.sync.userId);
+        if (Array.isArray(payload?.vocab)) {
+          sourceVocab = payload.vocab;
+          state.vocab = payload.vocab;
+          saveJSON(STORAGE_KEYS.vocab, state.vocab);
+        }
+      } catch (error) {
+        setStatus(`同步云端词汇失败，改用本地数据导出：${error.message}`, true);
+      }
+    }
+    if (!sourceVocab.length) return;
     const maxRows = Math.max(1, Number(state.billing.features.csvExportMaxRows) || 60);
-    const fullExportEnabled = maxRows >= state.vocab.length;
-    const exportItems = fullExportEnabled ? state.vocab : state.vocab.slice(0, maxRows);
+    const fullExportEnabled = maxRows >= sourceVocab.length;
+    const exportItems = fullExportEnabled ? sourceVocab : sourceVocab.slice(0, maxRows);
 
     const headers = [
       "word",
@@ -415,24 +470,26 @@ export function createVocabModule(deps) {
     a.remove();
     URL.revokeObjectURL(url);
     if (!fullExportEnabled) {
-      setStatus(`Free 套餐仅可导出前 ${maxRows} 条，升级 Pro 可导出全部。`, true);
+      setStatus(`基础版仅可导出前 ${maxRows} 条，升级 Pro 可导出全部。`, true);
     } else {
       setStatus(`导出完成，共 ${exportItems.length} 条。`);
     }
   }
 
   return {
-    exportVocabCsv,
-    jumpToPosition,
-    onAddBookmark,
-    onAddNoteClick,
+    getNoteRanges,
+    findRangeHit,
     onAddWord,
-    onBookmarkListClick,
-    onNoteListClick,
+    onAddNoteClick,
     onSaveNote,
-    onVocabAction,
-    renderBookmarks,
     renderNotes,
+    onNoteListClick,
+    onAddBookmark,
+    renderBookmarks,
+    onBookmarkListClick,
+    jumpToPosition,
     renderVocab,
+    onVocabAction,
+    exportVocabCsv,
   };
 }

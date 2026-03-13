@@ -1,7 +1,9 @@
 # Environment
 .env
 .env.local
+.env.*
 .env.*.local
+!.env.example
 
 # OS / editor noise
 .DS_Store

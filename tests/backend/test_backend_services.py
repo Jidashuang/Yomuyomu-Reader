@@ -232,6 +232,45 @@ class BackendServiceTests(unittest.TestCase):
         saved_progress = self.progress_repository.get_progress("reader", "book_local")
         self.assertEqual(saved_progress["chapterId"], "ch-2")
 
+    def test_account_register_then_login_credentials_flow(self) -> None:
+        service = AccountService(
+            users=self.user_repository,
+            sync_repository=self.sync_repository,
+            progress_repository=self.progress_repository,
+            book_repository=self.book_repository,
+            billing_store=self.billing_store,
+            event_repository=self.event_repository,
+            ai_repository=self.ai_repository,
+        )
+        result, error = service.register_account(
+            user_id="reader_login",
+            anonymous_id="guest_login_1",
+            local_snapshot={},
+            display_name="reader_login",
+        )
+        self.assertEqual(error, "")
+        self.assertIsNotNone(result)
+        self.assertTrue(
+            self.user_repository.set_credentials(
+                user_id="reader_login",
+                username="reader_login",
+                password_hash=self.user_repository.hash_password("alpha-pass-123"),
+            )
+        )
+
+        authenticated = self.user_repository.authenticate(
+            username="reader_login",
+            password="alpha-pass-123",
+        )
+        self.assertIsNotNone(authenticated)
+        self.assertEqual(authenticated["userId"], "reader_login")
+        self.assertIsNone(
+            self.user_repository.authenticate(
+                username="reader_login",
+                password="wrong-pass",
+            )
+        )
+
     def test_billing_grace_period_downgrades_after_expiry(self) -> None:
         now_ms = int(time.time() * 1000)
         self.billing_store.set_plan(

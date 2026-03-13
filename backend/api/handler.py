@@ -71,6 +71,15 @@ from backend.repositories.orders import PaymentOrderStore as RepositoryPaymentOr
 from backend.repositories.progress import ReadingProgressRepository
 from backend.repositories.sync import SyncSnapshotRepository
 from backend.repositories.users import UserRepository
+from backend.api import (
+    routes_account,
+    routes_billing,
+    routes_books,
+    routes_dict,
+    routes_import,
+    routes_reader,
+    routes_sync,
+)
 from backend.services.account_service import AccountService
 from backend.services.ai_service import (
     AIExplainLimitError,
@@ -1346,6 +1355,40 @@ class ApiHandler(SimpleHTTPRequestHandler):
         import_jobs_dir=settings.IMPORT_JOBS_DIR,
     )
 
+    def json_response(self, status: int, payload: dict) -> None:
+        json_response(self, status, payload)
+
+    def text_response(self, status: int, text: str) -> None:
+        text_response(self, status, text)
+
+    @staticmethod
+    def sanitize_user_id(user_id: str) -> str:
+        return sanitize_user_id(user_id)
+
+    @staticmethod
+    def parse_multipart_form(raw: bytes, content_type: str):
+        return parse_multipart_form(raw, content_type)
+
+    @staticmethod
+    def parse_book_content(raw: bytes, name: str, file_type: str) -> dict:
+        return service_parse_book(raw, name, file_type)
+
+    @staticmethod
+    def stripe_payment_link_url() -> str:
+        return stripe_payment_link_url()
+
+    @staticmethod
+    def stripe_normalize_billing_cycle(value: str | None) -> str:
+        return stripe_normalize_billing_cycle(value)
+
+    @staticmethod
+    def utc_iso8601(value: int) -> str:
+        return utc_iso8601(value)
+
+    @staticmethod
+    def stripe_module():
+        return stripe
+
     def end_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header(
@@ -2292,6 +2335,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
         if parsed.path in {"/admin", "/admin/"}:
             self.path = "/admin.html"
             super().do_GET()
@@ -2328,631 +2372,92 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 },
             )
             return
-        if parsed.path == "/api/admin/ops/daily":
-            self.handle_admin_ops_daily()
+        # Domain route dispatch (GET): keep handler as thin entrypoint.
+        if routes_account.dispatch_get(self, parsed.path, query):
             return
-        if parsed.path == "/api/admin/users":
-            self.handle_admin_users()
+        if routes_import.dispatch_get(self, parsed.path):
             return
-        if parsed.path == "/api/admin/ai-usage":
-            self.handle_admin_ai_usage()
+        if routes_books.dispatch_get(self, parsed.path, query):
             return
-        if parsed.path == "/api/export/vocab":
-            self.handle_export_vocab()
+        if routes_billing.dispatch_get(self, parsed.path, query):
             return
-        if parsed.path == "/api/export/progress":
-            self.handle_export_progress()
-            return
-        job_match = re.fullmatch(r"/api/import-jobs/([^/]+)", parsed.path)
-        if job_match:
-            self.handle_import_job_status(job_match.group(1))
-            return
-        chapter_match = re.fullmatch(r"/api/books/([^/]+)/chapters/([^/]+)", parsed.path)
-        if chapter_match:
-            query = parse_qs(parsed.query)
-            user_id = sanitize_user_id(query.get("userId", ["default"])[0])
-            self.handle_book_chapter(
-                book_id=chapter_match.group(1),
-                chapter_id=chapter_match.group(2),
-                user_id=user_id,
-            )
-            return
-        book_match = re.fullmatch(r"/api/books/([^/]+)", parsed.path)
-        if book_match:
-            query = parse_qs(parsed.query)
-            user_id = sanitize_user_id(query.get("userId", ["default"])[0])
-            self.handle_book_metadata(book_match.group(1), user_id=user_id)
-            return
-        if parsed.path == "/api/sample-book":
-            query = parse_qs(parsed.query)
-            user_id = sanitize_user_id(query.get("userId", ["default"])[0])
-            self.handle_sample_book(user_id=user_id)
-            return
-        if parsed.path == "/api/billing/plan":
-            query = parse_qs(parsed.query)
-            user_id = sanitize_user_id(query.get("userId", ["default"])[0])
-            json_response(self, 200, {"ok": True, "billing": self.billing_payload(user_id)})
-            return
-        if parsed.path == "/api/payment/options":
-            if not settings.payment_enabled():
-                json_response(
-                    self,
-                    200,
-                    {
-                        "enabled": False,
-                        "appBaseUrl": self.resolve_app_base_url(),
-                        "stripe": {
-                            "publishableKey": str(STRIPE_PUBLISHABLE_KEY or "").strip(),
-                        },
-                    },
-                )
-                return
-            json_response(
-                self,
-                200,
-                {
-                    "enabled": True,
-                    "appBaseUrl": self.resolve_app_base_url(),
-                    "channels": payment_channels(),
-                    "stripe": {
-                        "paymentLinkReady": self._stripe_payment_link_ready(),
-                        "paymentLink": stripe_payment_link_url(),
-                        "checkoutReady": self._stripe_checkout_ready(),
-                        "publishableKey": str(STRIPE_PUBLISHABLE_KEY or "").strip(),
-                    },
-                },
-            )
-            return
-        if parsed.path == "/api/billing/order-status":
-            self.handle_billing_order_status()
-            return
-        if parsed.path == "/api/sync/pull":
-            self.handle_sync_pull()
+        if routes_sync.dispatch_get(self, parsed.path, query):
             return
         if parsed.path.startswith("/api/"):
-            json_response(self, 404, {"ok": False, "error": "API route not found"})
+            self.json_response(404, {"ok": False, "error": "API route not found"})
             return
         super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        admin_plan_match = re.fullmatch(r"/api/admin/users/([^/]+)/plan", parsed.path)
-        if admin_plan_match:
-            self.handle_admin_user_plan_update(admin_plan_match.group(1))
+        # Domain route dispatch (POST): keep handler as thin entrypoint.
+        if routes_billing.dispatch_post(self, parsed.path):
             return
-        delete_book_match = re.fullmatch(r"/api/books/([^/]+)/delete", parsed.path)
-        if delete_book_match:
-            self.handle_delete_book(delete_book_match.group(1))
+        if routes_import.dispatch_post(self, parsed.path):
             return
-        progress_match = re.fullmatch(r"/api/books/([^/]+)/progress", parsed.path)
-        if progress_match:
-            self.handle_save_progress(progress_match.group(1))
+        if routes_books.dispatch_post(self, parsed.path):
             return
-        if parsed.path == "/api/books/import":
-            self.handle_async_import()
+        if routes_reader.dispatch_post(self, parsed.path):
             return
-        if parsed.path == "/api/auth/register":
-            self.handle_auth_register()
+        if routes_account.dispatch_post(self, parsed.path):
             return
-        if parsed.path == "/api/auth/login":
-            self.handle_auth_login()
+        if routes_dict.dispatch_post(self, parsed.path):
             return
-        if parsed.path == "/api/feedback":
-            self.handle_feedback()
+        if routes_sync.dispatch_post(self, parsed.path):
             return
-        if parsed.path == "/api/cloud/delete":
-            self.handle_cloud_delete()
-            return
-        if parsed.path == "/api/account/delete":
-            self.handle_account_delete()
-            return
-        if parsed.path == "/api/events":
-            self.handle_event_ingest()
-            return
-        if parsed.path == "/api/billing/create-order":
-            self.handle_billing_create_order()
-            return
-        if parsed.path == "/api/billing/create-checkout-session":
-            self.handle_billing_create_checkout_session()
-            return
-        if parsed.path == "/api/billing/checkout-complete":
-            self.handle_billing_checkout_complete()
-            return
-        if parsed.path == "/api/billing/create-portal-session":
-            self.handle_billing_create_portal_session()
-            return
-        if parsed.path == "/api/billing/confirm-paid":
-            self.handle_billing_confirm_paid(source="manual-confirm")
-            return
-        if parsed.path == "/api/billing/stripe/webhook":
-            self.handle_billing_stripe_webhook()
-            return
-        if parsed.path == "/api/billing/wechat/notify":
-            self.handle_billing_notify(PAY_CHANNEL_WECHAT)
-            return
-        if parsed.path == "/api/billing/alipay/notify":
-            self.handle_billing_notify(PAY_CHANNEL_ALIPAY)
-            return
-        if parsed.path == "/api/import":
-            self.handle_import()
-            return
-        if parsed.path == "/api/billing/set-plan":
-            self.handle_set_billing_plan()
-            return
-        if parsed.path == "/api/nlp/tokenize":
-            self.handle_tokenize()
-            return
-        if parsed.path == "/api/dict/lookup":
-            self.handle_lookup()
-            return
-        if parsed.path == "/api/ai/explain":
-            self.handle_ai_explain()
-            return
-        if parsed.path == "/api/sync/push":
-            self.handle_sync_push()
-            return
-        json_response(self, 404, {"ok": False, "error": "API route not found"})
+        self.json_response(404, {"ok": False, "error": "API route not found"})
 
+    # Compatibility shims: keep legacy handler methods callable while delegating to split route modules.
     def handle_import(self) -> None:
-        content_type = self.headers.get("Content-Type", "")
-        if "multipart/form-data" not in content_type:
-            json_response(self, 400, {"ok": False, "error": "Use multipart/form-data with file"})
-            return
-        length = int(self.headers.get("Content-Length", "0") or 0)
-        if length <= 0:
-            json_response(self, 400, {"ok": False, "error": "Empty body"})
-            return
-        if length > settings.IMPORT_MAX_FILE_BYTES + 64 * 1024:
-            json_response(self, 413, {"ok": False, "error": "上传文件过大。"})
-            return
-        raw_body = self.rfile.read(length)
-        fields, files = parse_multipart_form(raw_body, content_type)
-        if not files or "file" not in files:
-            json_response(self, 400, {"ok": False, "error": "Missing `file` field"})
-            return
-        user_id = sanitize_user_id((fields or {}).get("userId", "default"))
-        filename, raw = files["file"]
-        filename = filename or "book.txt"
-        ext = Path(filename).suffix.lower().lstrip(".")
-        if len(raw) > settings.IMPORT_MAX_FILE_BYTES:
-            json_response(self, 413, {"ok": False, "error": "上传文件过大。"})
-            return
-        billing = self.gate_plan_access(
-            user_id=user_id,
-            feature="import",
-            payload=fields or {},
-            file_ext=ext or "txt",
-        )
-        if billing is None:
-            return
-        try:
-            result = service_parse_book(raw, filename, ext)
-            json_response(self, 200, {"ok": True, "book": result})
-        except Exception as exc:
-            json_response(self, 500, {"ok": False, "error": str(exc)})
+        routes_import.handle_import(self)
 
     def handle_async_import(self) -> None:
-        content_type = self.headers.get("Content-Type", "")
-        if "multipart/form-data" not in content_type:
-            json_response(self, 400, {"ok": False, "error": "Use multipart/form-data with file"})
-            return
-        length = int(self.headers.get("Content-Length", "0") or 0)
-        if length <= 0:
-            json_response(self, 400, {"ok": False, "error": "Empty body"})
-            return
-        if length > settings.IMPORT_MAX_FILE_BYTES + 64 * 1024:
-            json_response(self, 413, {"ok": False, "error": "上传文件过大。"})
-            return
-        raw_body = self.rfile.read(length)
-        fields, files = parse_multipart_form(raw_body, content_type)
-        if not files or "file" not in files:
-            json_response(self, 400, {"ok": False, "error": "Missing `file` field"})
-            return
-
-        user_id = sanitize_user_id((fields or {}).get("userId", "default"))
-        filename, raw = files["file"]
-        filename = filename or "book.txt"
-        ext = Path(filename).suffix.lower().lstrip(".")
-        if len(raw) > settings.IMPORT_MAX_FILE_BYTES:
-            json_response(self, 413, {"ok": False, "error": "上传文件过大。"})
-            return
-        billing = self.gate_plan_access(
-            user_id=user_id,
-            feature="import",
-            payload=fields or {},
-            file_ext=ext or "txt",
-        )
-        if billing is None:
-            return
-        allow_user, retry_after_user = self.import_rate_limiter.check(
-            key=f"import:user:{user_id}",
-            limit=settings.IMPORT_RATE_LIMIT_MAX_PER_USER,
-            window_seconds=settings.IMPORT_RATE_LIMIT_WINDOW_SECONDS,
-        )
-        if not allow_user:
-            self.respond_entitlement_error(
-                status=429,
-                code="IMPORT_RATE_LIMITED",
-                error=f"导入过于频繁，请 {retry_after_user} 秒后再试。",
-                billing=billing,
-                extra={"retryAfterSeconds": retry_after_user},
-            )
-            return
-        allow_ip, retry_after_ip = self.import_rate_limiter.check(
-            key=f"import:ip:{self.client_ip()}",
-            limit=settings.IMPORT_RATE_LIMIT_MAX_PER_IP,
-            window_seconds=settings.IMPORT_RATE_LIMIT_WINDOW_SECONDS,
-        )
-        if not allow_ip:
-            self.respond_entitlement_error(
-                status=429,
-                code="IMPORT_RATE_LIMITED",
-                error=f"该网络请求过于频繁，请 {retry_after_ip} 秒后再试。",
-                billing=billing,
-                extra={"retryAfterSeconds": retry_after_ip},
-            )
-            return
-
-        self.event_repository.track(
-            "book_import_requested",
-            user_id=user_id,
-            payload={"fileName": filename, "fileType": ext or "txt"},
-        )
-        job = self.library_import_service.enqueue_import(
-            user_id=user_id,
-            file_name=filename,
-            file_type=ext or "txt",
-            raw=raw,
-        )
-        json_response(
-            self,
-            202,
-            {
-                "ok": True,
-                "jobId": job["jobId"],
-                "job": job,
-            },
-        )
+        routes_import.handle_async_import(self)
 
     def handle_import_job_status(self, job_id: str) -> None:
-        job = self.import_job_repository.get_job(job_id)
-        if not job:
-            json_response(self, 404, {"ok": False, "error": "Import job not found"})
-            return
-        json_response(self, 200, {"ok": True, "job": job})
+        routes_import.handle_import_job_status(self, job_id)
 
     def handle_sample_book(self, *, user_id: str) -> None:
-        book = self.library_import_service.sample_book_metadata()
-        if not book:
-            json_response(self, 503, {"ok": False, "error": "Sample book unavailable"})
-            return
-        metadata = self._book_metadata_payload(book_id=str(book.get("id", "") or ""), user_id=user_id)
-        if not metadata:
-            json_response(self, 503, {"ok": False, "error": "Sample book unavailable"})
-            return
-        self.event_repository.track("sample_opened", user_id=user_id)
-        json_response(self, 200, {"ok": True, "book": metadata})
+        routes_books.handle_sample_book(self, user_id=user_id)
 
     def handle_book_metadata(self, book_id: str, *, user_id: str) -> None:
-        book = self._book_metadata_payload(book_id=book_id, user_id=user_id)
-        if not book:
-            json_response(self, 404, {"ok": False, "error": "Book not found"})
-            return
-        json_response(self, 200, {"ok": True, "book": book})
+        routes_books.handle_book_metadata(self, book_id, user_id=user_id)
 
     def handle_book_chapter(self, *, book_id: str, chapter_id: str, user_id: str) -> None:
-        chapter = self._current_chapter_payload(book_id=book_id, chapter_id=chapter_id)
-        if not chapter:
-            json_response(self, 404, {"ok": False, "error": "Chapter not found"})
-            return
-        progress = self.progress_repository.get_progress(user_id, book_id)
-        json_response(
-            self,
-            200,
-            {
-                "ok": True,
-                "chapter": chapter,
-                "progress": progress,
-            },
-        )
+        routes_books.handle_book_chapter(self, book_id=book_id, chapter_id=chapter_id, user_id=user_id)
 
     def handle_save_progress(self, book_id: str) -> None:
-        payload = self.read_json_body()
-        if payload is None:
-            json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
-            return
-        user_id = sanitize_user_id(str(payload.get("userId", "default") or "default"))
-        saved = self.progress_repository.save_progress(
-            user_id=user_id,
-            book_id=book_id,
-            chapter_id=str(payload.get("chapterId", "") or "").strip(),
-            chapter_index=int(payload.get("chapterIndex", 0) or 0),
-            paragraph_index=int(payload.get("paragraphIndex", 0) or 0),
-            char_index=int(payload.get("charIndex", 0) or 0),
-        )
-        json_response(self, 200, {"ok": True, "progress": saved})
+        routes_reader.handle_save_progress(self, book_id)
 
     def handle_event_ingest(self) -> None:
-        payload = self.read_json_body()
-        if payload is None:
-            json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
-            return
-        event_name = str(payload.get("name", "") or payload.get("event", "")).strip()
-        if not event_name:
-            json_response(self, 400, {"ok": False, "error": "Missing event name"})
-            return
-        self.event_repository.track(
-            event_name,
-            user_id=sanitize_user_id(str(payload.get("userId", "default") or "default")),
-            book_id=str(payload.get("bookId", "") or "").strip(),
-            chapter_id=str(payload.get("chapterId", "") or "").strip(),
-            payload=payload.get("payload") if isinstance(payload.get("payload"), dict) else {},
-        )
-        json_response(self, 200, {"ok": True})
+        routes_reader.handle_event_ingest(self)
 
     def handle_auth_register(self) -> None:
-        payload = self.read_json_body()
-        if payload is None:
-            json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
-            return
-        username = self.user_repository.normalize_username(str(payload.get("username", "") or ""))
-        password = str(payload.get("password", "") or "")
-        if username or password:
-            if not self.user_repository.valid_username(username):
-                json_response(
-                    self,
-                    400,
-                    {
-                        "ok": False,
-                        "code": "INVALID_USERNAME",
-                        "error": "用户名仅支持 3-32 位小写字母、数字、下划线和连字符。",
-                    },
-                )
-                return
-            if username in {"default"} or username.startswith("guest_") or username.startswith("guest-"):
-                json_response(
-                    self,
-                    400,
-                    {
-                        "ok": False,
-                        "code": "INVALID_USERNAME",
-                        "error": "用户名不可使用 guest/default 保留前缀。",
-                    },
-                )
-                return
-            if len(password) < 8:
-                json_response(
-                    self,
-                    400,
-                    {
-                        "ok": False,
-                        "code": "WEAK_PASSWORD",
-                        "error": "密码至少需要 8 位。",
-                    },
-                )
-                return
-            if self.user_repository.find_by_username(username):
-                json_response(
-                    self,
-                    409,
-                    {
-                        "ok": False,
-                        "code": "USERNAME_EXISTS",
-                        "error": "该用户名已存在，请换一个。",
-                    },
-                )
-                return
-            user_id = sanitize_user_id(username)
-            result, error = self.account_service.register_account(
-                user_id=user_id,
-                local_snapshot=payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else {},
-                anonymous_id=str(payload.get("anonymousId", "") or "").strip(),
-                display_name=username,
-            )
-            if result is None:
-                json_response(
-                    self,
-                    409,
-                    {
-                        "ok": False,
-                        "code": "ACCOUNT_EXISTS",
-                        "error": error or "该用户名已存在。",
-                    },
-                )
-                return
-            if not self.user_repository.set_credentials(
-                user_id=user_id,
-                username=username,
-                password_hash=self.user_repository.hash_password(password),
-            ):
-                json_response(
-                    self,
-                    409,
-                    {
-                        "ok": False,
-                        "code": "USERNAME_EXISTS",
-                        "error": "该用户名已存在，请换一个。",
-                    },
-                )
-                return
-            refreshed_user = self.user_repository.get_user(user_id)
-            if refreshed_user is not None:
-                result["account"] = refreshed_user
-            result["userId"] = user_id
-            json_response(self, 200, {"ok": True, **result})
-            return
-        user_id = sanitize_user_id(str(payload.get("userId", "") or ""))
-        if not user_id or user_id == "default" or user_id.startswith("guest_") or user_id.startswith("guest-"):
-            json_response(
-                self,
-                400,
-                {
-                    "ok": False,
-                    "code": "INVALID_ACCOUNT_ID",
-                    "error": "请使用一个稳定的账号 ID，不能使用 guest/default。",
-                },
-            )
-            return
-        result, error = self.account_service.register_account(
-            user_id=user_id,
-            local_snapshot=payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else {},
-            anonymous_id=str(payload.get("anonymousId", "") or "").strip(),
-            display_name=str(payload.get("displayName", "") or "").strip(),
-        )
-        if result is None:
-            json_response(
-                self,
-                409,
-                {
-                    "ok": False,
-                    "code": "ACCOUNT_EXISTS",
-                    "error": error or "该账号已存在。",
-                },
-            )
-            return
-        json_response(self, 200, {"ok": True, **result})
+        routes_account.handle_auth_register(self)
 
     def handle_auth_login(self) -> None:
-        payload = self.read_json_body()
-        if payload is None:
-            json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
-            return
-        username = self.user_repository.normalize_username(str(payload.get("username", "") or ""))
-        password = str(payload.get("password", "") or "")
-        account = self.user_repository.authenticate(username=username, password=password)
-        if account is None:
-            json_response(
-                self,
-                401,
-                {
-                    "ok": False,
-                    "code": "INVALID_CREDENTIALS",
-                    "error": "用户名或密码错误。",
-                },
-            )
-            return
-        json_response(
-            self,
-            200,
-            {
-                "ok": True,
-                "account": {
-                    "userId": account["userId"],
-                    "username": account["username"] or username,
-                    "accountToken": account["accountToken"],
-                },
-            },
-        )
+        routes_account.handle_auth_login(self)
 
     def handle_feedback(self) -> None:
-        payload = self.read_json_body()
-        if payload is None:
-            json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
-            return
-        message = str(payload.get("message", "") or "").strip()
-        kind = str(payload.get("kind", "feedback") or "feedback").strip().lower()
-        user_id = sanitize_user_id(str(payload.get("userId", "default") or "default"))
-        if not message:
-            json_response(self, 400, {"ok": False, "error": "反馈内容不能为空。"})
-            return
-        self.event_repository.track(
-            "feedback_submitted",
-            user_id=user_id,
-            book_id=str(payload.get("bookId", "") or "").strip(),
-            chapter_id=str(payload.get("chapterId", "") or "").strip(),
-            payload={
-                "kind": kind,
-                "message": message[:500],
-            },
-        )
-        json_response(self, 200, {"ok": True})
+        routes_reader.handle_feedback(self)
 
     def handle_delete_book(self, book_id: str) -> None:
-        payload = self.read_json_body()
-        if payload is None:
-            json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
-            return
-        user_id = sanitize_user_id(str(payload.get("userId", "default") or "default"))
-        billing = self.require_registered_account(user_id=user_id, payload=payload)
-        if billing is None:
-            return
-        if not self.account_service.delete_book(user_id=user_id, book_id=book_id):
-            json_response(self, 404, {"ok": False, "error": "Book not found"})
-            return
-        remote = self.sync_repository.pull(user_id) or {}
-        snapshot = remote.get("snapshot") if isinstance(remote, dict) else {}
-        if isinstance(snapshot, dict):
-            current_book = snapshot.get("book") if isinstance(snapshot.get("book"), dict) else {}
-            if str(current_book.get("id", "") or "").strip() == str(book_id or "").strip():
-                snapshot["book"] = None
-                snapshot["currentChapter"] = 0
-                snapshot["savedAt"] = int(time.time() * 1000)
-                self.sync_repository.push(user_id, snapshot)
-        self.event_repository.track("book_deleted", user_id=user_id, book_id=book_id)
-        json_response(self, 200, {"ok": True, "billing": billing})
+        routes_books.handle_delete_book(self, book_id)
 
     def handle_cloud_delete(self) -> None:
-        payload = self.read_json_body()
-        if payload is None:
-            json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
-            return
-        user_id = sanitize_user_id(str(payload.get("userId", "default") or "default"))
-        billing = self.require_registered_account(user_id=user_id, payload=payload)
-        if billing is None:
-            return
-        result = self.account_service.delete_cloud_data(user_id)
-        json_response(self, 200, {"ok": True, "billing": self.billing_payload(user_id), **result})
+        routes_account.handle_cloud_delete(self)
 
     def handle_account_delete(self) -> None:
-        payload = self.read_json_body()
-        if payload is None:
-            json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
-            return
-        user_id = sanitize_user_id(str(payload.get("userId", "default") or "default"))
-        billing = self.require_registered_account(user_id=user_id, payload=payload)
-        if billing is None:
-            return
-        result = self.account_service.delete_account(user_id)
-        json_response(self, 200, {"ok": True, **result})
+        routes_account.handle_account_delete(self)
 
     def handle_export_vocab(self) -> None:
-        query = parse_qs(urlparse(self.path).query)
-        user_id = sanitize_user_id(query.get("userId", ["default"])[0])
-        billing = self.require_registered_account(user_id=user_id)
-        if billing is None:
-            return
-        json_response(self, 200, {"ok": True, **self.account_service.export_vocabulary(user_id)})
+        routes_account.handle_export_vocab(self)
 
     def handle_export_progress(self) -> None:
-        query = parse_qs(urlparse(self.path).query)
-        user_id = sanitize_user_id(query.get("userId", ["default"])[0])
-        billing = self.require_registered_account(user_id=user_id)
-        if billing is None:
-            return
-        json_response(self, 200, {"ok": True, **self.account_service.export_progress(user_id)})
+        routes_account.handle_export_progress(self)
 
     def handle_admin_ops_daily(self) -> None:
-        if not BILLING_ADMIN_TOKEN:
-            json_response(
-                self,
-                404,
-                {"ok": False, "code": "OPS_DISABLED", "error": "Admin ops 未启用。"},
-            )
-            return
-        provided = str(self.headers.get("X-Admin-Token", "") or "").strip()
-        if provided != BILLING_ADMIN_TOKEN:
-            json_response(
-                self,
-                403,
-                {"ok": False, "code": "INVALID_ADMIN_TOKEN", "error": "管理员令牌无效。"},
-            )
-            return
-        query = parse_qs(urlparse(self.path).query)
-        try:
-            days = int(query.get("days", ["14"])[0] or 14)
-        except ValueError:
-            days = 14
-        json_response(self, 200, {"ok": True, "rows": self.ops_service.daily_metrics(days=days)})
+        routes_account.handle_admin_ops_daily(self)
 
     def _require_admin_token(self) -> bool:
         if not ADMIN_TOKEN:
@@ -2977,83 +2482,13 @@ class ApiHandler(SimpleHTTPRequestHandler):
         return True
 
     def handle_admin_users(self) -> None:
-        if not self._require_admin_token():
-            return
-        users = []
-        for row in self.user_repository.list_admin_users():
-            user_id = str(row.get("userId", "") or "")
-            billing = self.billing_store.get_billing(user_id)
-            created_at = int(row.get("createdAt", 0) or 0)
-            users.append(
-                {
-                    "userId": user_id,
-                    "username": str(row.get("username", "") or ""),
-                    "createdAt": (
-                        datetime.fromtimestamp(created_at / 1000, tz=timezone.utc)
-                        .isoformat()
-                        .replace("+00:00", "Z")
-                        if created_at > 0
-                        else ""
-                    ),
-                    "planName": str(billing.get("planName", "") or "free"),
-                    "planStatus": str(billing.get("planStatus", "") or "inactive"),
-                    "updatedAt": int(billing.get("updatedAt", 0) or 0),
-                }
-            )
-        json_response(self, 200, {"ok": True, "users": users})
+        routes_account.handle_admin_users(self)
 
     def handle_admin_ai_usage(self) -> None:
-        if not self._require_admin_token():
-            return
-        query = parse_qs(urlparse(self.path).query)
-        try:
-            limit = max(1, min(1000, int(query.get("limit", ["200"])[0] or 200)))
-        except ValueError:
-            limit = 200
-        rows = self.ai_repository.list_recent_daily_usage(limit=limit)
-        events = self.ai_repository.list_recent_usage_events(limit=limit)
-        for row in rows:
-            row["lastUsedAtIso"] = utc_iso8601(int(row.get("lastUsedAt", 0) or 0))
-        for row in events:
-            row["createdAtIso"] = utc_iso8601(int(row.get("createdAt", 0) or 0))
-        json_response(
-            self,
-            200,
-            {
-                "ok": True,
-                "rows": rows,
-                "events": events,
-            },
-        )
+        routes_account.handle_admin_ai_usage(self)
 
     def handle_admin_user_plan_update(self, raw_user_id: str) -> None:
-        if not self._require_admin_token():
-            return
-        payload = self.read_json_body()
-        if payload is None:
-            json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
-            return
-        user_id = sanitize_user_id(raw_user_id)
-        if not self.user_repository.get_user(user_id):
-            json_response(
-                self,
-                404,
-                {"ok": False, "code": "USER_NOT_FOUND", "error": "用户不存在。"},
-            )
-            return
-        plan = normalize_plan(str(payload.get("plan", FREE_PLAN)))
-        status = normalize_plan_status(
-            str(payload.get("status", "active" if plan == PRO_PLAN else "inactive"))
-        )
-        self.billing_store.set_plan(
-            user_id,
-            plan,
-            source="admin-manual",
-            plan_status=status,
-            subscription_status="manual",
-            billing_state="active" if status == "active" else "inactive",
-        )
-        json_response(self, 200, {"ok": True, "billing": self.billing_payload(user_id)})
+        routes_billing.handle_admin_user_plan_update(self, raw_user_id)
 
     def _sync_plan_from_paid_order(self, order: dict) -> dict:
         if normalize_pay_channel(order.get("channel")) == PAY_CHANNEL_STRIPE:
@@ -3098,751 +2533,46 @@ class ApiHandler(SimpleHTTPRequestHandler):
         return source
 
     def handle_billing_create_order(self) -> None:
-        payload = self.read_json_body()
-        if payload is None:
-            json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
-            return
-        user_id = sanitize_user_id(str(payload.get("userId", "default")))
-        json_response(
-            self,
-            410,
-            {
-                "ok": False,
-                "code": "LEGACY_PAYMENT_DISABLED",
-                "error": "旧版支付流程已停用，请使用 Stripe Checkout。",
-                "billing": self.billing_payload(user_id),
-            },
-        )
-        return
+        routes_billing.handle_billing_create_order(self)
 
     def handle_billing_create_checkout_session(self) -> None:
-        payload = self.read_json_body()
-        if payload is None:
-            json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
-            return
-        user_id = sanitize_user_id(str(payload.get("userId", "default")))
-        interval = normalize_stripe_interval(
-            payload.get("interval")
-            or payload.get("billing_cycle")
-            or payload.get("billingCycle")
-            or "monthly"
-        )
-        if interval == "yearly" and not stripe_price_id("yearly"):
-            json_response(
-                self,
-                400,
-                {
-                    "ok": False,
-                    "code": "YEARLY_NOT_CONFIGURED",
-                    "error": "Stripe 年付套餐尚未配置。",
-                },
-            )
-            return
-        if interval == "monthly" and not stripe_price_id("monthly"):
-            json_response(
-                self,
-                400,
-                {
-                    "ok": False,
-                    "code": "MONTHLY_NOT_CONFIGURED",
-                    "error": "Stripe 月付套餐尚未配置。",
-                },
-            )
-            return
-        billing = self.require_registered_account(user_id=user_id, payload=payload)
-        if billing is None:
-            return
-        channels = billing["paymentChannels"]
-        if not channels.get(PAY_CHANNEL_STRIPE):
-            json_response(
-                self,
-                400,
-                {
-                    "ok": False,
-                    "code": "STRIPE_NOT_ENABLED",
-                    "error": "Stripe 支付未启用或配置不完整。",
-                    "billing": billing,
-                },
-            )
-            return
-        if not self._stripe_checkout_ready():
-            json_response(
-                self,
-                503,
-                {
-                    "ok": False,
-                    "code": "STRIPE_NOT_READY",
-                    "error": "Stripe Checkout 未就绪，请检查秘钥和 Price 配置。",
-                    "billing": billing,
-                },
-            )
-            return
-        order = self.order_store.create_order(
-            user_id=user_id,
-            channel=PAY_CHANNEL_STRIPE,
-            amount_fen=PRO_PRICE_FEN,
-            plan=PRO_PLAN,
-        )
-        session, error = self._create_stripe_checkout_session(
-            user_id=user_id,
-            interval=interval,
-            order_id=order["orderId"],
-        )
-        if session is None:
-            json_response(
-                self,
-                502,
-                {
-                    "ok": False,
-                    "code": "STRIPE_SESSION_FAILED",
-                    "error": error or "Stripe Checkout Session 创建失败。",
-                    "billing": billing,
-                },
-            )
-            return
-        checkout_url = str(session.get("url", "") or "").strip()
-        if checkout_url:
-            order = self.order_store.set_pay_url(order["orderId"], checkout_url) or order
-        order_response = self._sanitize_order_for_response(order)
-        json_response(
-            self,
-            200,
-            {
-                "ok": True,
-                "url": checkout_url,
-                "checkoutUrl": checkout_url,
-                "sessionId": str(session.get("id", "") or "").strip(),
-                "interval": interval,
-                "order": order_response,
-                "billing": self.billing_payload(user_id),
-            },
-        )
+        routes_billing.handle_billing_create_checkout_session(self)
 
     def handle_billing_checkout_complete(self) -> None:
-        payload = self.read_json_body()
-        if payload is None:
-            json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
-            return
-        session_id = str(payload.get("sessionId", "") or "").strip()
-        user_id_hint = sanitize_user_id(str(payload.get("userId", "default")))
-        if not session_id:
-            json_response(self, 400, {"ok": False, "error": "Missing sessionId"})
-            return
-        session, error = self._stripe_retrieve_checkout_session(session_id)
-        if session is None:
-            json_response(
-                self,
-                502,
-                {
-                    "ok": False,
-                    "code": "STRIPE_SESSION_FETCH_FAILED",
-                    "error": error or "无法查询 Stripe Checkout Session。",
-                },
-            )
-            return
-        billing, order, sync_error = self._sync_billing_from_checkout_session(
-            session,
-            source="stripe-checkout-complete",
-            user_id_hint=user_id_hint,
-        )
-        if billing is None:
-            json_response(
-                self,
-                400,
-                {
-                    "ok": False,
-                    "code": "CHECKOUT_NOT_COMPLETED",
-                    "error": sync_error or "Checkout 尚未完成。",
-                },
-            )
-            return
-        json_response(
-            self,
-            200,
-            {
-                "ok": True,
-                "billing": self.billing_payload(billing["userId"]),
-                "billingCycle": stripe_normalize_billing_cycle(billing.get("billingCycle")),
-                "order": order or {},
-                "session": {
-                    "id": str(session.get("id", "") or "").strip(),
-                    "status": str(session.get("status", "") or "").strip(),
-                    "paymentStatus": str(session.get("payment_status", "") or "").strip(),
-                },
-            },
-        )
+        routes_billing.handle_billing_checkout_complete(self)
 
     def handle_billing_create_portal_session(self) -> None:
-        payload = self.read_json_body()
-        if payload is None:
-            json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
-            return
-        user_id = sanitize_user_id(str(payload.get("userId", "default")))
-        billing = self.require_registered_account(user_id=user_id, payload=payload)
-        if billing is None:
-            return
-        if not billing["paymentChannels"].get(PAY_CHANNEL_STRIPE):
-            json_response(
-                self,
-                400,
-                {
-                    "ok": False,
-                    "code": "STRIPE_NOT_ENABLED",
-                    "error": "Stripe 支付未启用或配置不完整。",
-                    "billing": billing,
-                },
-            )
-            return
-        if not self._stripe_portal_ready():
-            json_response(
-                self,
-                503,
-                {
-                    "ok": False,
-                    "code": "STRIPE_PORTAL_NOT_READY",
-                    "error": "Stripe Billing Portal 未就绪。",
-                    "billing": billing,
-                },
-            )
-            return
-        customer_id = str(billing.get("stripeCustomerId", "") or "").strip()
-        if not customer_id:
-            json_response(
-                self,
-                400,
-                {
-                    "ok": False,
-                    "code": "NO_STRIPE_CUSTOMER",
-                    "error": "当前账号还没有 Stripe 客户记录，请先完成一次订阅支付。",
-                    "billing": billing,
-                },
-            )
-            return
-        session, error = self._create_stripe_portal_session(customer_id=customer_id)
-        if session is None:
-            json_response(
-                self,
-                502,
-                {
-                    "ok": False,
-                    "code": "STRIPE_PORTAL_SESSION_FAILED",
-                    "error": error or "无法创建 Stripe Portal 会话。",
-                    "billing": billing,
-                },
-            )
-            return
-        json_response(
-            self,
-            200,
-            {
-                "ok": True,
-                "portalUrl": str(session.get("url", "") or "").strip(),
-                "billing": billing,
-            },
-        )
+        routes_billing.handle_billing_create_portal_session(self)
 
     def handle_billing_stripe_webhook(self) -> None:
-        raw = self.read_raw_body()
-        if not self._stripe_sdk_ready():
-            json_response(
-                self,
-                503,
-                {
-                    "ok": False,
-                    "code": "STRIPE_NOT_READY",
-                    "error": "Stripe SDK 未就绪，请检查 STRIPE_SECRET_KEY 与依赖安装。",
-                },
-            )
-            return
-        payload: dict | None = None
-        if STRIPE_WEBHOOK_SECRET:
-            signature = str(self.headers.get("Stripe-Signature", "") or "").strip()
-            try:
-                event_obj = stripe.Webhook.construct_event(
-                    payload=raw,
-                    sig_header=signature,
-                    secret=STRIPE_WEBHOOK_SECRET,
-                    tolerance=STRIPE_WEBHOOK_TOLERANCE_SECONDS
-                    if STRIPE_WEBHOOK_TOLERANCE_SECONDS > 0
-                    else None,
-                )
-                payload = self._stripe_object_to_dict(event_obj)
-            except Exception as exc:
-                json_response(
-                    self,
-                    400,
-                    {
-                        "ok": False,
-                        "code": "INVALID_STRIPE_SIGNATURE",
-                        "error": self._stripe_error_message(exc, "Stripe Webhook 签名校验失败。"),
-                    },
-                )
-                return
-        else:
-            payload = self._parse_json_or_form_raw(raw, self.headers.get("Content-Type", ""))
-            if payload is None or not isinstance(payload, dict):
-                json_response(self, 400, {"ok": False, "error": "Invalid webhook payload"})
-                return
-        event_type = str(payload.get("type", "") or "").strip()
-        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-        event_obj = data.get("object") if isinstance(data.get("object"), dict) else {}
-        if event_type == "checkout.session.completed":
-            self._sync_billing_from_checkout_session(
-                event_obj,
-                source="stripe-webhook-checkout",
-            )
-        elif event_type in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
-            self._sync_billing_from_stripe_subscription(
-                subscription=event_obj,
-                source=f"stripe-webhook:{event_type}",
-            )
-        elif event_type in {"invoice.paid", "invoice.payment_failed"}:
-            customer = event_obj.get("customer")
-            customer_id = (
-                str(customer.get("id", "") or "").strip()
-                if isinstance(customer, dict)
-                else str(customer or "").strip()
-            )
-            subscription = event_obj.get("subscription")
-            subscription_id = (
-                str(subscription.get("id", "") or "").strip()
-                if isinstance(subscription, dict)
-                else str(subscription or "").strip()
-            )
-            metadata = event_obj.get("metadata") if isinstance(event_obj.get("metadata"), dict) else {}
-            self._sync_billing_from_stripe_subscription(
-                subscription_id=subscription_id,
-                customer_id=customer_id,
-                metadata=metadata,
-                source=f"stripe-webhook:{event_type}",
-                last_order_id=str(event_obj.get("id", "") or "").strip(),
-            )
-        json_response(self, 200, {"ok": True, "received": True})
+        routes_billing.handle_billing_stripe_webhook(self)
 
     def handle_billing_order_status(self) -> None:
-        query = parse_qs(urlparse(self.path).query)
-        order_id = str(query.get("orderId", [""])[0] or "").strip()
-        if not order_id:
-            json_response(self, 400, {"ok": False, "error": "Missing orderId"})
-            return
-        order = self.order_store.get_order(order_id)
-        if not order:
-            json_response(self, 404, {"ok": False, "error": "Order not found"})
-            return
-        query_user = sanitize_user_id(query.get("userId", [""])[0])
-        if query_user and query_user != "default" and query_user != order["userId"]:
-            json_response(
-                self,
-                403,
-                {
-                    "ok": False,
-                    "error": "Order does not belong to current user",
-                },
-            )
-            return
-        if order["status"] == "paid":
-            self._sync_plan_from_paid_order(order)
-        order = self._sanitize_order_for_response(order)
-        json_response(
-            self,
-            200,
-            {
-                "ok": True,
-                "order": order,
-                "billing": self.billing_payload(order["userId"]),
-            },
-        )
+        routes_billing.handle_billing_order_status(self)
 
     def handle_billing_confirm_paid(self, source: str = "manual-confirm") -> None:
-        payload = self.read_json_or_form_body()
-        if payload is None:
-            json_response(self, 400, {"ok": False, "error": "Invalid payment payload"})
-            return
-        order_id = self._extract_order_id(payload)
-        user_id = "default"
-        if order_id:
-            existing_order = self.order_store.get_order(order_id)
-            if existing_order:
-                user_id = sanitize_user_id(str(existing_order.get("userId", "default")))
-        json_response(
-            self,
-            410,
-            {
-                "ok": False,
-                "code": "LEGACY_PAYMENT_DISABLED",
-                "error": "手动确认支付流程已停用，请使用 Stripe Checkout 验单。",
-                "billing": self.billing_payload(user_id),
-            },
-        )
-        return
+        routes_billing.handle_billing_confirm_paid(self, source=source)
 
     def handle_billing_notify(self, channel: str) -> None:
-        normalized_channel = normalize_pay_channel(channel)
-        raw = self.read_raw_body()
-        payload: dict | None
-        official_used = False
-        official_error = ""
-        if normalized_channel == PAY_CHANNEL_WECHAT:
-            payload, official_used, official_error = self._parse_wechat_official_notify(raw)
-        else:
-            payload = self._parse_json_or_form_raw(raw, self.headers.get("Content-Type", ""))
-            if payload is None:
-                json_response(self, 400, {"ok": False, "error": "Invalid notify payload"})
-                return
-            if normalized_channel == PAY_CHANNEL_ALIPAY:
-                payload, official_used, official_error = self._parse_alipay_official_notify(payload)
-        if payload is None:
-            json_response(self, 400, {"ok": False, "error": "Invalid notify payload"})
-            return
-        if official_used and official_error:
-            if normalized_channel == PAY_CHANNEL_ALIPAY:
-                text_response(self, 400, "failure")
-            elif normalized_channel == PAY_CHANNEL_WECHAT:
-                json_response(self, 400, {"code": "FAIL", "message": official_error})
-            else:
-                json_response(self, 400, {"ok": False, "error": official_error})
-            return
-        official_verified = official_used and not official_error
-        if not official_verified and BILLING_NOTIFY_TOKEN and not self._payment_token_valid():
-            json_response(
-                self,
-                403,
-                {
-                    "ok": False,
-                    "code": "INVALID_PAYMENT_TOKEN",
-                    "error": "支付通知令牌无效。",
-                },
-            )
-            return
-        if not self._notify_success(normalized_channel, payload):
-            if official_verified and normalized_channel == PAY_CHANNEL_ALIPAY:
-                text_response(self, 200, "success")
-                return
-            if official_verified and normalized_channel == PAY_CHANNEL_WECHAT:
-                json_response(self, 200, {"code": "SUCCESS", "message": "成功", "ignored": True})
-                return
-            json_response(self, 200, {"ok": True, "ignored": True})
-            return
-        order_id = self._extract_order_id(payload)
-        if not order_id:
-            json_response(self, 400, {"ok": False, "error": "Missing orderId in notify payload"})
-            return
-        external_trade_no = self._extract_external_trade_no(payload)
-        order = self.order_store.mark_paid(
-            order_id,
-            paid_source=f"{normalized_channel}-notify",
-            external_trade_no=external_trade_no,
-        )
-        if not order:
-            json_response(self, 404, {"ok": False, "error": "Order not found"})
-            return
-        self._track_payment_success(order)
-        self._sync_plan_from_paid_order(order)
-        if official_verified and normalized_channel == PAY_CHANNEL_ALIPAY:
-            text_response(self, 200, "success")
-            return
-        if official_verified and normalized_channel == PAY_CHANNEL_WECHAT:
-            json_response(self, 200, {"code": "SUCCESS", "message": "成功", "order": order})
-            return
-        json_response(self, 200, {"ok": True, "order": order})
+        routes_billing.handle_billing_notify(self, channel)
 
     def handle_tokenize(self) -> None:
-        payload = self.read_json_body()
-        if payload is None:
-            json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
-            return
-        text = str(payload.get("text", ""))
-        if not text.strip():
-            json_response(self, 200, {"ok": True, "tokens": []})
-            return
-        tokens = self.tokenizer.tokenize(text)
-        json_response(self, 200, {"ok": True, "backend": self.tokenizer.backend, "tokens": tokens})
+        routes_dict.handle_tokenize(self)
 
     def handle_lookup(self) -> None:
-        payload = self.read_json_body()
-        if payload is None:
-            json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
-            return
-        surface = str(payload.get("surface", "")).strip()
-        lemma = str(payload.get("lemma", "")).strip()
-        entries = self.dict_store.lookup(surface, lemma)
-        json_response(self, 200, {"ok": True, "entries": entries})
+        routes_dict.handle_lookup(self)
 
     def handle_ai_explain(self) -> None:
-        payload = self.read_json_body()
-        if payload is None:
-            json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
-            return
-        sentence = str(payload.get("sentence", "") or "")
-        subject = self.resolve_explain_subject(payload)
-        subject_type = str(subject.get("subjectType", "guest") or "guest").strip().lower()
-        subject_id = str(subject.get("subjectId", "") or "").strip()
-        billing_user_id = sanitize_user_id(str(subject.get("billingUserId", "default") or "default"))
-        if not subject_id:
-            subject_id = billing_user_id
-
-        billing = self.gate_plan_access(user_id=billing_user_id, feature="ai_explain", payload=payload)
-        if billing is None:
-            return
-
-        allow_subject, retry_after_subject = self.ai_rate_limiter.check(
-            key=f"explain:{subject_type}:{subject_id}",
-            limit=settings.AI_EXPLAIN_RATE_LIMIT_MAX_PER_USER,
-            window_seconds=settings.AI_EXPLAIN_RATE_LIMIT_WINDOW_SECONDS,
-        )
-        if not allow_subject:
-            self.respond_entitlement_error(
-                status=429,
-                code="AI_EXPLAIN_RATE_LIMITED",
-                error=f"解释请求过于频繁，请 {retry_after_subject} 秒后再试。",
-                billing=billing,
-                extra={"retryAfterSeconds": retry_after_subject},
-            )
-            return
-        request_ip = self.client_ip()
-        allow_ip, retry_after_ip = self.ai_rate_limiter.check(
-            key=f"explain:ip:{request_ip}",
-            limit=settings.AI_EXPLAIN_RATE_LIMIT_MAX_PER_IP,
-            window_seconds=settings.AI_EXPLAIN_RATE_LIMIT_WINDOW_SECONDS,
-        )
-        if not allow_ip:
-            self.respond_entitlement_error(
-                status=429,
-                code="AI_EXPLAIN_RATE_LIMITED",
-                error=f"该网络请求过于频繁，请 {retry_after_ip} 秒后再试。",
-                billing=billing,
-                extra={"retryAfterSeconds": retry_after_ip},
-            )
-            return
-        guest_ip_quota_reserved = False
-        if subject_type == "guest" and settings.AI_EXPLAIN_GUEST_IP_DAILY_LIMIT > 0:
-            guest_ip_quota_reserved = self.ai_repository.reserve_daily_usage(
-                subject_type="guest_ip",
-                subject_id=request_ip,
-                daily_limit=settings.AI_EXPLAIN_GUEST_IP_DAILY_LIMIT,
-            )
-            if not guest_ip_quota_reserved:
-                billing = self.billing_payload(
-                    billing_user_id,
-                    usage_subject_type=subject_type,
-                    usage_subject_id=subject_id,
-                )
-                json_response(
-                    self,
-                    429,
-                    {
-                        "ok": False,
-                        "code": "EXPLAIN_LIMIT_REACHED",
-                        "error": "You have reached today's AI explanation limit.",
-                        "billing": billing,
-                    },
-                )
-                return
-        try:
-            result = self.ai_explain_service.explain(
-                subject_type=subject_type,
-                subject_id=subject_id,
-                plan=billing["plan"],
-                sentence=sentence,
-                context=payload.get("context"),
-                mode=str(payload.get("mode", "reader") or "reader"),
-                model=str(payload.get("model", "") or ""),
-                prompt_version=str(payload.get("promptVersion", "") or ""),
-            )
-        except ValueError as exc:
-            if guest_ip_quota_reserved:
-                self.ai_repository.release_daily_usage(
-                    subject_type="guest_ip",
-                    subject_id=request_ip,
-                )
-            json_response(
-                self,
-                400,
-                {"ok": False, "code": "INVALID_SENTENCE", "error": str(exc)},
-            )
-            return
-        except AIExplainLimitError as exc:
-            if guest_ip_quota_reserved:
-                self.ai_repository.release_daily_usage(
-                    subject_type="guest_ip",
-                    subject_id=request_ip,
-                )
-            billing = self.billing_payload(
-                billing_user_id,
-                usage_subject_type=subject_type,
-                usage_subject_id=subject_id,
-            )
-            json_response(
-                self,
-                429,
-                {
-                    "ok": False,
-                    "code": "EXPLAIN_LIMIT_REACHED",
-                    "error": str(exc),
-                    "billing": billing,
-                },
-            )
-            return
-        except AIExplainNotConfiguredError as exc:
-            if guest_ip_quota_reserved:
-                self.ai_repository.release_daily_usage(
-                    subject_type="guest_ip",
-                    subject_id=request_ip,
-                )
-            json_response(
-                self,
-                503,
-                {
-                    "ok": False,
-                    "code": "AI_NOT_CONFIGURED",
-                    "error": str(exc),
-                    "billing": billing,
-                },
-            )
-            return
-        except AIExplainProviderError as exc:
-            if guest_ip_quota_reserved:
-                self.ai_repository.release_daily_usage(
-                    subject_type="guest_ip",
-                    subject_id=request_ip,
-                )
-            json_response(
-                self,
-                503,
-                {
-                    "ok": False,
-                    "code": "AI_PROVIDER_ERROR",
-                    "error": str(exc),
-                    "billing": billing,
-                },
-            )
-            return
-        except RuntimeError as exc:
-            if guest_ip_quota_reserved:
-                self.ai_repository.release_daily_usage(
-                    subject_type="guest_ip",
-                    subject_id=request_ip,
-                )
-            json_response(
-                self,
-                503,
-                {
-                    "ok": False,
-                    "code": "AI_PROVIDER_ERROR",
-                    "error": str(exc),
-                    "billing": billing,
-                },
-            )
-            return
-        billing = self.billing_payload(
-            billing_user_id,
-            usage_subject_type=subject_type,
-            usage_subject_id=subject_id,
-        )
-        self.event_repository.track(
-            "ai_explain_requested",
-            user_id=billing_user_id,
-            book_id=str(payload.get("bookId", "") or "").strip(),
-            chapter_id=str(payload.get("chapterId", "") or "").strip(),
-            payload={
-                "cached": bool(result.get("cached")),
-                "mode": str(payload.get("mode", "reader") or "reader"),
-                "model": result.get("model", ""),
-                "subjectType": subject_type,
-            },
-        )
-        if result.get("cached"):
-            self.event_repository.track(
-                "ai_explain_cache_hit",
-                user_id=billing_user_id,
-                book_id=str(payload.get("bookId", "") or "").strip(),
-                chapter_id=str(payload.get("chapterId", "") or "").strip(),
-            )
-        json_response(self, 200, {"ok": True, "billing": billing, **result})
+        routes_dict.handle_ai_explain(self)
 
     def handle_sync_pull(self) -> None:
-        query = parse_qs(urlparse(self.path).query)
-        user_id = sanitize_user_id(query.get("userId", ["default"])[0])
-        billing = self.gate_plan_access(user_id=user_id, feature="sync_pull")
-        if billing is None:
-            self.track_sync_event(user_id=user_id, direction="pull", success=False, error="entitlement")
-            return
-        payload = self.sync_repository.pull(user_id) or {"updatedAt": 0, "snapshot": {}}
-        self.track_sync_event(user_id=user_id, direction="pull", success=True)
-        json_response(self, 200, {"ok": True, "data": payload})
+        routes_sync.handle_sync_pull(self)
 
     def handle_sync_push(self) -> None:
-        payload = self.read_json_body()
-        if payload is None:
-            json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
-            return
-        user_id = sanitize_user_id(str(payload.get("userId", "default")))
-        billing = self.gate_plan_access(user_id=user_id, feature="sync_push", payload=payload)
-        if billing is None:
-            self.track_sync_event(user_id=user_id, direction="push", success=False, error="entitlement")
-            return
-        snapshot = payload.get("snapshot", {})
-        if not isinstance(snapshot, dict):
-            self.track_sync_event(user_id=user_id, direction="push", success=False, error="invalid_snapshot")
-            json_response(self, 400, {"ok": False, "error": "Invalid snapshot payload"})
-            return
-        data = {"updatedAt": int(time.time() * 1000), "snapshot": snapshot}
-        self.sync_repository.push(user_id, data)
-        self.track_sync_event(user_id=user_id, direction="push", success=True)
-        json_response(self, 200, {"ok": True, "data": data})
+        routes_sync.handle_sync_push(self)
 
     def handle_set_billing_plan(self) -> None:
-        if not BILLING_ALLOW_MANUAL_PLAN_CHANGE:
-            json_response(
-                self,
-                403,
-                {
-                    "ok": False,
-                    "code": "MANUAL_PLAN_CHANGE_DISABLED",
-                    "error": "手动套餐切换已禁用。",
-                },
-            )
-            return
-        if not BILLING_ADMIN_TOKEN:
-            json_response(
-                self,
-                403,
-                {
-                    "ok": False,
-                    "code": "ADMIN_TOKEN_REQUIRED",
-                    "error": "请先配置 BILLING_ADMIN_TOKEN。",
-                },
-            )
-            return
-        provided = str(self.headers.get("X-Admin-Token", "") or "").strip()
-        if provided != BILLING_ADMIN_TOKEN:
-            json_response(
-                self,
-                403,
-                {
-                    "ok": False,
-                    "code": "INVALID_ADMIN_TOKEN",
-                    "error": "管理员令牌无效。",
-                },
-            )
-            return
-        payload = self.read_json_body()
-        if payload is None:
-            json_response(self, 400, {"ok": False, "error": "Invalid JSON body"})
-            return
-        user_id = sanitize_user_id(str(payload.get("userId", "default")))
-        plan = normalize_plan(str(payload.get("plan", FREE_PLAN)))
-        status = normalize_plan_status(
-            str(payload.get("status", "active" if plan == PRO_PLAN else "inactive"))
-        )
-        self.billing_store.set_plan(
-            user_id,
-            plan,
-            source="manual",
-            plan_status=status,
-            billing_state="active" if status == "active" else "inactive",
-        )
-        json_response(self, 200, {"ok": True, "billing": self.billing_payload(user_id)})
+        routes_billing.handle_set_billing_plan(self)
 
     def read_raw_body(self) -> bytes:
         length = int(self.headers.get("Content-Length", "0") or 0)

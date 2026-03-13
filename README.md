@@ -1,87 +1,164 @@
-# YomuYomu 日语原著阅读器（MVP/Beta）
+# YomuYomu 日语阅读器
 
-## 项目简介
-YomuYomu 是一个面向日语原著阅读学习的 Web 阅读器。项目已提供前后端一体运行方式，支持从导入、阅读、点词到账号同步的完整学习流程。
+YomuYomu 是一个前后端同仓库的日语阅读学习项目，覆盖导入、阅读、点词、账号、同步和 Stripe 订阅支付闭环。
 
-## 核心功能
-- 多格式导入：`TXT`、`EPUB`、`PDF`、`MOBI`
-- 阅读流程：目录跳转、连续阅读、翻页与自动翻页
-- 点词查义：后端分词 + 词典查询，支持外部词典联动
-- 难度辅助：JLPT 级别标注、难词速览、词频统计
-- 学习记录：生词本、批注、书签、基础复习能力
-- 账户与同步：基础账号流程、阅读数据同步接口
-- 订阅与支付：Free/Pro 门禁 + Stripe Checkout（测试模式）闭环
+## 项目结构
 
-## 技术栈
-- 前端：Vanilla JavaScript + HTML + CSS
-- 后端：Python 3（`http.server` + 模块化 service/repository）
-- 数据层：SQLite + 本地 JSON 文件
-- 测试：`unittest`（后端）+ Playwright（E2E）
-- 部署：Docker，支持 Render / Railway
+```text
+.
+├── index.html / styles.css / app.js
+├── reader.js / state.js / readerStore.js
+├── features/                 # 阅读与日语功能模块
+├── stores/                   # 前端状态层
+├── services/                 # 前端 API/业务服务层
+├── utils/
+├── billing-success.html      # Stripe 成功回跳页（callback）
+├── billing-cancel.html
+├── backend/
+│   ├── server.py             # 启动入口
+│   ├── config.py             # 环境变量与运行配置
+│   ├── api/                  # 路由分发层
+│   ├── services/             # 后端服务层
+│   ├── repositories/         # SQLite/文件仓储层
+│   └── data/                 # 本地运行数据（已被 .gitignore 忽略）
+├── tests/
+│   ├── backend/              # Python unittest
+│   └── e2e/                  # Playwright 端到端测试
+└── docs/
+```
 
-## 快速开始
-1. 准备环境：Python 3.11+、Node.js 18+
-2. 复制配置模板：
+## 本地启动方式
+
+### 1. 准备环境
+
+- Python 3.11+
+- Node.js 18+
+
+### 2. 初始化配置
 
 ```bash
 cp .env.example .env
 ```
 
-3. 安装依赖：
+### 3. 安装依赖
 
 ```bash
 python3 -m pip install -r backend/requirements.txt
 npm install
 ```
 
-4. 本地启动：
+### 4. 启动服务
 
 ```bash
 npm run dev
 ```
 
-5. 打开浏览器访问：`http://127.0.0.1:8000`
+默认地址：`http://127.0.0.1:8000`
 
-## 本地支付测试（Stripe 测试模式）
-1. 在 `.env` 填写测试配置：
-- `APP_BASE_URL=http://127.0.0.1:8000`
+## 环境变量
+
+使用 `.env.example` 作为唯一模板，常用变量按场景分组如下：
+
+### 运行基础
+
+- `HOST`、`PORT`
+- `APP_BASE_URL`
+- `BACKUP_RETENTION_DAYS`
+
+### Stripe 支付（最小可用集）
+
 - `STRIPE_PAY_ENABLED=1`
-- `STRIPE_PUBLISHABLE_KEY=pk_test_...`（前端公开密钥）
-- `STRIPE_SECRET_KEY=sk_test_...`
-- `STRIPE_PRICE_ID_MONTHLY=price_1T9eA2JbnGpXlXVwu6k3xjjt`（Pro Monthly — $6/month）
-- `STRIPE_PRICE_ID_YEARLY=price_1T9eDYJbnGpXlXVwvcUaSGsG`（Pro Yearly — $60/year）
+- `STRIPE_PUBLISHABLE_KEY`
+- `STRIPE_SECRET_KEY`
+- `STRIPE_PRICE_ID_MONTHLY`
+- `STRIPE_PRICE_ID_YEARLY`
+- `STRIPE_PORTAL_RETURN_URL`
+- `STRIPE_WEBHOOK_SECRET`（建议配置）
 
-2. 启动服务后，注册账号并在套餐区选择月付或年付，然后点击“订阅 Pro”。
-3. 前端会调用 `/api/billing/create-checkout-session`，并使用 `STRIPE_PUBLISHABLE_KEY` 跳转 Stripe Checkout 测试支付页。
-4. 使用测试卡支付：
-- 卡号：`4242 4242 4242 4242`
-- 有效期：任意未来日期
-- CVC：任意 3 位
-5. 支付成功后会回到 `/billing-success.html`，该页面会调用后端完成验单并同步套餐状态。
-6. 支付取消会回到 `/billing-cancel.html`。
-7. 只有 `/api/billing/checkout-complete` 验单成功后，用户才会被标记为 `plan=pro` 与对应 `billing_cycle`。
+### 账号/安全
+
+- `BILLING_NOTIFY_TOKEN`
+- `BILLING_ADMIN_TOKEN`
+- `ADMIN_TOKEN`
+
+### AI 解释（可选）
+
+- `AI_EXPLAIN_ENABLED`
+- `AI_EXPLAIN_PROVIDER`
+- `AI_EXPLAIN_API_KEY`
+- `AI_EXPLAIN_MODEL`
+
+## 支付流程（Checkout -> Callback）
+
+1. 前端点击“订阅 Pro”，调用 `POST /api/billing/create-checkout-session`。
+2. 后端创建 Stripe Checkout Session，返回 `sessionId`/`checkoutUrl`。
+3. 用户在 Stripe 托管页面支付。
+4. 支付完成后回跳 `billing-success.html?session_id=...`。
+5. 成功页调用 `POST /api/billing/checkout-complete`（callback 验单）。
+6. 后端拉取 Stripe Session，同步订单与套餐状态（`plan=pro`，并写入 `billingCycle`）。
+7. 前端刷新套餐 UI；取消支付则回跳 `billing-cancel.html`，不改套餐。
+
+详细支付文档见 [docs/billing.md](./docs/billing.md)。
+
+## API 服务说明
+
+后端由 `backend/server.py` 启动，`backend/api/handler.py` 分发到各领域路由模块：
+
+### 系统与健康
+
+- `GET /api/health`：API、分词器、词典、支付通道状态
+
+### 书籍与导入
+
+- `GET /api/sample-book`
+- `POST /api/books/import`：异步导入，返回 `jobId`
+- `GET /api/import-jobs/{jobId}`：导入任务状态
+- `GET /api/books/{bookId}`：书籍元数据
+- `GET /api/books/{bookId}/chapters/{chapterId}`：章节内容
+- `POST /api/books/{bookId}/progress`：保存阅读进度
+
+### 词典与语言
+
+- `POST /api/nlp/tokenize`
+- `POST /api/dict/lookup`
+- `POST /api/ai/explain`
+
+### 账号与同步
+
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `POST /api/cloud/delete`
+- `POST /api/account/delete`
+- `POST /api/sync/push`
+- `GET /api/sync/pull`
+
+### 计费与支付
+
+- `GET /api/billing/plan`
+- `GET /api/payment/options`
+- `POST /api/billing/create-checkout-session`
+- `POST /api/billing/checkout-complete`
+- `POST /api/billing/create-portal-session`
+- `POST /api/billing/stripe/webhook`
 
 ## 运行测试
+
 ```bash
 npm run test:backend
 npm run test:e2e
 npm run test
 ```
 
-首次执行 E2E 测试前可先安装浏览器：
+首次运行 E2E：
 
 ```bash
 npx playwright install
 ```
 
-## 部署概览
-项目已提供 Docker 化部署基础，可直接部署到 Render / Railway，或本地 Docker 运行。详细步骤见：
+## 相关文档
 
-- [部署文档](./docs/deployment.md)
-
-## 文档索引
 - [架构说明](./docs/architecture.md)
 - [部署说明](./docs/deployment.md)
-- [词典与词表](./docs/dictionary.md)
+- [词典说明](./docs/dictionary.md)
 - [计费与支付](./docs/billing.md)
 - [Stripe 测试模式](./docs/stripe.md)

@@ -9,13 +9,26 @@ import {
   saveJSON,
   state,
 } from "./readerStore.js";
+import * as analysisService from "./services/analysisService.js";
+import * as dictionaryService from "./services/dictionaryService.js";
+import {
+  alignMatchedWordToToken as alignMatchedWordToTokenShared,
+  buildLookupCandidates as buildLookupCandidatesShared,
+  buildLookupPayloads as buildLookupPayloadsShared,
+  expandKanaTailCandidates as expandKanaTailCandidatesShared,
+  lookupLocalDictionary as lookupLocalDictionaryShared,
+  normalizeReading as normalizeReadingShared,
+  stripWordNoise as stripWordNoiseShared,
+} from "./services/localDictionaryLookup.js";
 
 export function createWordPopoverModule(deps) {
+  const readerSessionStore = state.readerStore?.sessionState;
   const {
     clampChapterIndex,
     ensureApiHealthFresh,
     extractSentenceExample,
-    fetchJson,
+    tokenizeText = (payload, options) => analysisService.tokenize(payload, options),
+    lookupWord = (payload, options) => dictionaryService.lookup(payload, options),
     getJlptLevel,
     getParagraphByLocation,
     hasCjkText,
@@ -32,13 +45,28 @@ export function createWordPopoverModule(deps) {
 
   async function selectToken(token, chapterId, chapterIndex, paraIndex) {
     clearSelectionMark();
-    state.selectedRange = {
-      chapterId,
-      paraIndex,
-      start: token.start,
-      end: token.end,
-    };
-    state.currentChapter = clampChapterIndex(chapterIndex);
+    if (readerSessionStore?.setSelection) {
+      readerSessionStore.setSelection({
+        selectedRange: {
+          chapterId,
+          paraIndex,
+          start: token.start,
+          end: token.end,
+        },
+      });
+    } else {
+      state.selectedRange = {
+        chapterId,
+        paraIndex,
+        start: token.start,
+        end: token.end,
+      };
+    }
+    if (readerSessionStore?.setCurrentChapter) {
+      readerSessionStore.setCurrentChapter(chapterIndex);
+    } else {
+      state.currentChapter = clampChapterIndex(chapterIndex);
+    }
     saveJSON(STORAGE_KEYS.currentChapter, state.currentChapter);
     renderBookMeta();
     renderChapterList();
@@ -48,10 +76,47 @@ export function createWordPopoverModule(deps) {
     const normalizedToken = normalizeToken(token);
     const resolvedToken = await enrichTokenDetails(normalizedToken);
     const contextExample = extractSentenceExample(paragraph, resolvedToken.start, resolvedToken.end);
-    const entries = await lookupDictionary(resolvedToken.surface, resolvedToken.lemma);
+    const entries = await lookupDictionary(
+      resolvedToken.surface,
+      resolvedToken.lemma,
+      resolvedToken.dictionaryForm
+    );
     const dict = buildDictionaryView(resolvedToken, entries, contextExample);
-    dict.jlpt = getJlptLevel(resolvedToken.surface, resolvedToken.lemma);
-    state.selected = dict;
+    dict.jlpt = getJlptLevel(
+      resolvedToken.surface,
+      resolvedToken.lemma,
+      resolvedToken.dictionaryForm
+    );
+    const alignedRange = alignMatchedWordToToken(
+      resolvedToken,
+      dict.matchedWord || dict.word || resolvedToken.surface
+    );
+    if (alignedRange.start !== resolvedToken.start || alignedRange.end !== resolvedToken.end) {
+      clearSelectionMark();
+      if (readerSessionStore?.setSelection) {
+        readerSessionStore.setSelection({
+          selectedRange: {
+            chapterId,
+            paraIndex,
+            start: alignedRange.start,
+            end: alignedRange.end,
+          },
+        });
+      } else {
+        state.selectedRange = {
+          chapterId,
+          paraIndex,
+          start: alignedRange.start,
+          end: alignedRange.end,
+        };
+      }
+      markSelection();
+    }
+    if (readerSessionStore?.setSelection) {
+      readerSessionStore.setSelection({ selected: dict });
+    } else {
+      state.selected = dict;
+    }
     setRightPanelTab("lookup", false);
     state.stats.lookupCount += 1;
     saveJSON(STORAGE_KEYS.stats, state.stats);
@@ -69,11 +134,7 @@ export function createWordPopoverModule(deps) {
     if (!state.apiOnline) return token;
 
     try {
-      const payload = await fetchJson("/api/nlp/tokenize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: token.surface }),
-      });
+      const payload = await tokenizeText({ text: token.surface });
       if (!payload.ok || !Array.isArray(payload.tokens) || !payload.tokens.length) return token;
       const exact = payload.tokens
         .map(normalizeToken)
@@ -82,6 +143,9 @@ export function createWordPopoverModule(deps) {
       return {
         ...token,
         lemma: String(exact.lemma || token.lemma || token.surface),
+        dictionaryForm: String(
+          exact.dictionaryForm || exact.base || exact.baseForm || exact.lemma || token.dictionaryForm || token.lemma
+        ),
         reading: normalizeReading(exact.reading || token.reading || "", token.surface),
         pos: String(exact.pos || token.pos || ""),
       };
@@ -90,19 +154,18 @@ export function createWordPopoverModule(deps) {
     }
   }
 
-  async function lookupDictionary(surface, lemma) {
+  async function lookupDictionary(surface, lemma, dictionaryForm = "") {
     if (!state.apiOnline) {
       await ensureApiHealthFresh();
     }
     if (state.apiOnline) {
       try {
-        const payload = await fetchJson("/api/dict/lookup", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ surface, lemma }),
-        });
-        if (payload.ok && Array.isArray(payload.entries)) {
-          return payload.entries;
+        const payloads = buildLookupPayloads(surface, lemma, dictionaryForm);
+        for (const lookupPayload of payloads) {
+          const payload = await lookupWord(lookupPayload);
+          if (payload.ok && Array.isArray(payload.entries) && payload.entries.length) {
+            return payload.entries;
+          }
         }
       } catch {
         state.apiOnline = false;
@@ -113,10 +176,13 @@ export function createWordPopoverModule(deps) {
   }
 
   function buildDictionaryView(token, entries, contextExample = "") {
+    const candidates = buildLookupCandidates(token.surface, token.lemma, token.dictionaryForm);
     if (entries.length) {
       const first = entries[0];
       const tokenPos = String(token.pos || "").trim();
       const preferTokenPos = tokenPos && tokenPos !== "fallback" && tokenPos !== "known";
+      const resolvedLemma = String(first.lemma || token.lemma || token.surface).trim() || token.surface;
+      const resolvedWord = String(first.surface || token.surface || resolvedLemma).trim() || resolvedLemma;
       const gloss = entries
         .map((item) => item.gloss_zh || item.glossZh || item.gloss || item.gloss_en || item.glossEn)
         .filter(Boolean)
@@ -132,20 +198,30 @@ export function createWordPopoverModule(deps) {
           ""
       ).trim();
       return {
-        word: token.surface,
-        lemma: first.lemma || token.lemma || token.surface,
-        reading: normalizeReading(token.reading || first.reading || "", token.surface) || "-",
+        word: resolvedWord,
+        lemma: resolvedLemma,
+        matchedWord: resolvedWord,
+        matchedLemma: resolvedLemma,
+        source: "api",
+        candidates,
+        reading: normalizeReading(token.reading || first.reading || "", resolvedWord) || "-",
         pos: preferTokenPos ? tokenPos : String(first.pos || tokenPos || "-"),
         meaning,
         example: example || "未提取到例句",
       };
     }
-    const local = lookupLocalDictionary(token.surface, token.lemma);
+    const local = lookupLocalDictionary(token.surface, token.lemma, token.dictionaryForm);
     const tokenPos = String(token.pos || "").trim();
+    const resolvedWord = String(local.matchedWord || token.surface || "").trim() || token.surface;
+    const resolvedLemma = String(local.matchedLemma || local.matchedWord || token.lemma || resolvedWord).trim();
     return {
-      word: token.surface,
-      lemma: token.lemma || token.surface,
-      reading: normalizeReading(token.reading || local.reading || "", token.surface) || "-",
+      word: resolvedWord,
+      lemma: resolvedLemma || resolvedWord,
+      matchedWord: resolvedWord,
+      matchedLemma: resolvedLemma || resolvedWord,
+      source: local.source || "none",
+      candidates: Array.isArray(local.candidates) ? local.candidates : candidates,
+      reading: normalizeReading(token.reading || local.reading || "", resolvedWord) || "-",
       pos: tokenPos && tokenPos !== "fallback" ? tokenPos : "-",
       meaning: local.meaning,
       example: contextExample || "未提取到例句",
@@ -153,61 +229,36 @@ export function createWordPopoverModule(deps) {
   }
 
   function stripWordNoise(value) {
-    return String(value || "")
-      .trim()
-      .replace(
-        /^[\s「」『』【】［］（）()〈〉《》〔〕｛｝{}'"“”‘’、。・，．！？!?：:；;]+|[\s「」『』【】［］（）()〈〉《》〔〕｛｝{}'"“”‘’、。・，．！？!?：:；;]+$/g,
-        ""
-      )
-      .trim();
+    return stripWordNoiseShared(value);
   }
 
-  function buildLookupCandidates(surface, lemma) {
-    const candidates = new Set();
-    const seed = [surface, lemma];
-    seed.forEach((raw) => {
-      const value = String(raw || "").trim();
-      if (!value) return;
-      candidates.add(value);
-      const stripped = stripWordNoise(value);
-      if (stripped) candidates.add(stripped);
-      const hira = katakanaToHiragana(stripped || value);
-      if (hira) candidates.add(hira);
-      const kata = hiraganaToKatakana(stripped || value);
-      if (kata) candidates.add(kata);
+  function buildLookupCandidates(surface, lemma, dictionaryForm = "") {
+    return buildLookupCandidatesShared(surface, lemma, dictionaryForm);
+  }
+
+  function buildLookupPayloads(surface, lemma, dictionaryForm = "") {
+    return buildLookupPayloadsShared(surface, lemma, dictionaryForm);
+  }
+
+  function expandKanaTailCandidates(value) {
+    return expandKanaTailCandidatesShared(value);
+  }
+
+  function alignMatchedWordToToken(token, matchedWord) {
+    return alignMatchedWordToTokenShared(token, matchedWord);
+  }
+
+  function lookupLocalDictionary(surface, lemma, dictionaryForm = "") {
+    return lookupLocalDictionaryShared({
+      surface,
+      lemma,
+      dictionaryForm,
+      miniDict: MINI_DICT,
+      vocab: state.vocab,
+      apiOnline: state.apiOnline,
+      jmdictReady: state.jmdictReady,
+      normalizeReading: normalizeReadingShared,
     });
-    return [...candidates];
-  }
-
-  function lookupLocalDictionary(surface, lemma) {
-    const candidates = buildLookupCandidates(surface, lemma);
-    for (const key of candidates) {
-      if (MINI_DICT[key]) {
-        return {
-          reading: normalizeReading(MINI_DICT[key].reading || "", key) || "-",
-          meaning: MINI_DICT[key].meaning || "词典无释义",
-        };
-      }
-      const fromVocab = state.vocab.find((item) => {
-        const word = stripWordNoise(item.word);
-        const itemLemma = stripWordNoise(item.lemma);
-        return word === key || itemLemma === key;
-      });
-      if (fromVocab) {
-        return {
-          reading: normalizeReading(fromVocab.reading || "", key) || "-",
-          meaning: fromVocab.meaning || "词典无释义",
-        };
-      }
-    }
-    const missingHint =
-      state.apiOnline && !state.jmdictReady
-        ? "未加载 jmdict.db，本地词库命中有限。可先构建词典库或点外部词典。"
-        : "本地词库未命中。可点“在 MOJi 中查”继续检索。";
-    return {
-      reading: normalizeReading("", surface || lemma) || "-",
-      meaning: missingHint,
-    };
   }
 
   function normalizeMojiScheme(value) {
@@ -224,7 +275,7 @@ export function createWordPopoverModule(deps) {
   }
 
   function getMojiLinks(word) {
-    const scheme = normalizeMojiScheme(state.settings.mojiScheme);
+    const scheme = normalizeMojiScheme(state.settingsStore?.mojiScheme || state.settings?.mojiScheme);
     const query = String(word || "").trim();
     const encoded = encodeURIComponent(query);
     return {

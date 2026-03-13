@@ -2,22 +2,68 @@ from __future__ import annotations
 
 import re
 
+TOKEN_PATTERN = re.compile(r"[一-龯々]+[ぁ-ゖー]*|[ァ-ヺー]+|[ぁ-ゖー]+|[A-Za-z0-9]+|[^\s]")
+LEXICAL_SCRIPT_RE = re.compile(r"[一-龯々ァ-ヺー]")
+HEURISTIC_AUX_SUFFIXES = ("でした", "です", "だ", "で", "に", "を", "へ", "と", "が", "は", "も", "の", "な")
+HEURISTIC_AUX_POS = {
+    "でした": "助動詞,heuristic",
+    "です": "助動詞,heuristic",
+    "だ": "助動詞,heuristic",
+    "な": "助動詞,heuristic",
+}
+
+
+def _has_lexical_script(text: str) -> bool:
+    return bool(LEXICAL_SCRIPT_RE.search(str(text or "")))
+
+
+def _split_heuristic_suffixes(surface: str) -> list[tuple[str, str]]:
+    value = str(surface or "")
+    if not value or len(value) <= 1 or not _has_lexical_script(value):
+        return [(value, "fallback")]
+
+    tails: list[str] = []
+    current = value
+    for _ in range(3):
+        matched = next(
+            (
+                suffix
+                for suffix in HEURISTIC_AUX_SUFFIXES
+                if current.endswith(suffix) and len(current) > len(suffix)
+            ),
+            "",
+        )
+        if not matched:
+            break
+        stem = current[: -len(matched)]
+        if not stem or not _has_lexical_script(stem):
+            break
+        tails.insert(0, matched)
+        current = stem
+
+    parts = [(current, "fallback")]
+    for tail in tails:
+        parts.append((tail, HEURISTIC_AUX_POS.get(tail, "助詞,heuristic")))
+    return parts
+
 
 def fallback_tokenize(text: str) -> list[dict]:
-    pattern = re.compile(r"[一-龯々]+[ぁ-ゖー]*|[ァ-ヺー]+|[ぁ-ゖー]+|[A-Za-z0-9]+|[^\s]")
     tokens = []
-    for match in pattern.finditer(text):
-        surface = match.group(0)
-        tokens.append(
-            {
-                "surface": surface,
-                "lemma": surface,
-                "reading": "",
-                "pos": "fallback",
-                "start": match.start(),
-                "end": match.end(),
-            }
-        )
+    for match in TOKEN_PATTERN.finditer(text):
+        start = match.start()
+        for surface, pos in _split_heuristic_suffixes(match.group(0)):
+            end = start + len(surface)
+            tokens.append(
+                {
+                    "surface": surface,
+                    "lemma": surface,
+                    "reading": "",
+                    "pos": pos,
+                    "start": start,
+                    "end": end,
+                }
+            )
+            start = end
     return tokens
 
 

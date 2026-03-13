@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 
 from backend.config import WORD_NOISE_RE
+from backend.services.jmdict_bootstrap import is_jmdict_db_ready
 
 
 class JMDictStore:
@@ -11,7 +12,7 @@ class JMDictStore:
         self.db_path = db_path
 
     def available(self) -> bool:
-        return self.db_path.exists()
+        return is_jmdict_db_ready(self.db_path)
 
     @staticmethod
     def _entry_columns(conn: sqlite3.Connection) -> set[str]:

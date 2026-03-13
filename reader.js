@@ -5,6 +5,7 @@ import {
   DEFAULT_SETTINGS,
   DEFAULT_SYNC,
   FREE_FEATURE_HINT,
+  HARD_WORD_LEVELS,
   HIGHLIGHT_LEVELS,
   HIRAGANA_ONLY_RE,
   JP_WORD_RE,
@@ -24,11 +25,48 @@ import {
   els,
   state,
 } from "./readerStore.js";
+import {
+  normalizeBilling as normalizeBillingData,
+  normalizeBillingCycle,
+  normalizeBillingInterval,
+  normalizeBillingOrder as normalizeBillingOrderData,
+  normalizePayChannel,
+  normalizePlan,
+  sanitizeSyncUserId,
+} from "./utils/normalize.js";
+import {
+  loadStorageValue,
+  removeStorageItem,
+  saveJSON as saveStoredJSON,
+  saveStorageValue,
+} from "./utils/storage.js";
+import { createReaderSession } from "./features/reader/readerSession.js";
+import { createReaderUi } from "./features/reader/readerUi.js";
+import { createReaderActions } from "./features/reader/readerActions.js";
+import { createReaderSelection } from "./features/reader/readerSelection.js";
+import { createReaderAnnotations } from "./features/reader/readerAnnotations.js";
+import { createReaderCore } from "./features/reader/readerCore.js";
+import { createReaderNavigation } from "./features/reader/readerNavigation.js";
+import { setAccountTokenProvider } from "./services/apiClient.js";
+import * as accountService from "./services/accountService.js";
+import * as billingService from "./services/billingService.js";
+import * as syncService from "./services/syncService.js";
+import * as analysisService from "./services/analysisService.js";
+import * as dictionaryService from "./services/dictionaryService.js";
+import {
+  alignMatchedWordToToken,
+  findJlptMatch,
+} from "./services/localDictionaryLookup.js";
+import {
+  isSuspiciousGluedLexicalToken,
+  shouldTrustAnalysisTokens,
+} from "./services/analysisTokenReliability.js";
+import * as ttsService from "./services/ttsService.js";
 
 export function initApp() {
   ensureSessionIdentity();
-  state.billing = normalizeBilling(state.billing);
-  state.billingOrder = normalizeBillingOrder(state.billingOrder);
+  state.billing = normalizeBillingState(state.billing);
+  state.billingOrder = normalizeBillingOrderState(state.billingOrder);
   if (!state.billingOrder.channel) {
     state.billingOrder.channel = "stripe";
   }
@@ -77,6 +115,66 @@ const STRIPE_JS_URL = "https://js.stripe.com/v3";
 let stripeSdkLoadPromise = null;
 let stripeClient = null;
 let stripeClientKey = "";
+const uiStore = state.uiStore || state.ui;
+const readerSessionStore = state.readerStore?.sessionState;
+
+function setCurrentChapterIndex(chapterIndex) {
+  if (readerSessionStore?.setCurrentChapter) {
+    readerSessionStore.setCurrentChapter(chapterIndex);
+    return;
+  }
+  state.currentChapter = clampChapterIndex(chapterIndex);
+}
+
+function setSelectionState(partial = {}) {
+  if (readerSessionStore?.setSelection) {
+    readerSessionStore.setSelection(partial);
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(partial, "selected")) {
+    state.selected = partial.selected;
+  }
+  if (Object.prototype.hasOwnProperty.call(partial, "selectedRange")) {
+    state.selectedRange = partial.selectedRange;
+  }
+  if (Object.prototype.hasOwnProperty.call(partial, "selectedSentence")) {
+    state.selectedSentence = partial.selectedSentence;
+  }
+}
+
+function resetExplainState() {
+  const nextExplain = {
+    loading: false,
+    sentenceId: "",
+    cached: false,
+    result: null,
+    error: "",
+  };
+  if (readerSessionStore?.setExplain) {
+    readerSessionStore.setExplain(nextExplain);
+    return;
+  }
+  state.explain = nextExplain;
+}
+
+// Reader directly uses services; bootstrap bridge stays as legacy compatibility only.
+setAccountTokenProvider(() =>
+  state.sync.accountMode === "registered" ? String(state.sync.accountToken || "").trim() : ""
+);
+
+function normalizeBillingState(raw) {
+  return normalizeBillingData(raw, {
+    defaultBilling: DEFAULT_BILLING,
+    syncUserId: state.sync?.userId,
+  });
+}
+
+function normalizeBillingOrderState(raw) {
+  return normalizeBillingOrderData(raw, {
+    defaultChannel: "stripe",
+    defaultInterval: "monthly",
+  });
+}
 
 function currentStripePublishableKey() {
   return String(state.billing?.stripe?.publishableKey || "").trim();
@@ -142,24 +240,24 @@ function isRegisteredAccount() {
 
 function readLegacyAccountStorage() {
   return {
-    userId: sanitizeSyncUserId(localStorage.getItem("userId") || ""),
-    accountToken: String(localStorage.getItem("accountToken") || "").trim(),
+    userId: sanitizeSyncUserId(loadStorageValue("userId", "")),
+    accountToken: String(loadStorageValue("accountToken", "")).trim(),
   };
 }
 
 function syncLegacyAccountStorage() {
   if (isRegisteredAccount()) {
-    localStorage.setItem("userId", state.sync.userId);
+    saveStorageValue("userId", state.sync.userId);
     if (state.sync.accountToken) {
-      localStorage.setItem("accountToken", state.sync.accountToken);
+      saveStorageValue("accountToken", state.sync.accountToken);
     } else {
-      localStorage.removeItem("accountToken");
+      removeStorageItem("accountToken");
     }
     return;
   }
   const guestId = sanitizeSyncUserId(state.sync.anonymousId || state.sync.userId) || createAnonymousId();
-  localStorage.setItem("userId", guestId);
-  localStorage.removeItem("accountToken");
+  saveStorageValue("userId", guestId);
+  removeStorageItem("accountToken");
 }
 
 function persistSyncState() {
@@ -206,7 +304,7 @@ function ensureSessionIdentity() {
   persistSyncState();
   if (state.book && !state.book.sampleSlug) {
     state.book = null;
-    state.currentChapter = 0;
+    setCurrentChapterIndex(0);
     syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
     clearPersistedBookState();
   }
@@ -220,12 +318,22 @@ function closeAccountMenu() {
   if (els.accountMenu) {
     els.accountMenu.open = false;
   }
+  if (uiStore?.setDropdownActive) {
+    uiStore.setDropdownActive("");
+  } else if (uiStore?.dropdown) {
+    uiStore.dropdown.activeId = "";
+  }
 }
 
 function openAccountModal(options = {}) {
   if (!els.accountModal || isAccountModalOpen()) return;
   els.accountModal.hidden = false;
   document.body.classList.add("modal-open");
+  if (uiStore?.setAccountModal) {
+    uiStore.setAccountModal(true);
+  } else if (uiStore?.modal) {
+    uiStore.modal.account = true;
+  }
   const preferredPanel = String(options.panel || "").trim().toLowerCase();
   const focusTarget = isRegisteredAccount()
     ? els.accountLogoutButton
@@ -241,6 +349,11 @@ function closeAccountModal() {
   if (!els.accountModal || !isAccountModalOpen()) return;
   els.accountModal.hidden = true;
   document.body.classList.remove("modal-open");
+  if (uiStore?.setAccountModal) {
+    uiStore.setAccountModal(false);
+  } else if (uiStore?.modal) {
+    uiStore.modal.account = false;
+  }
 }
 
 function initMoreAccordion() {
@@ -257,41 +370,305 @@ function initMoreAccordion() {
   });
 }
 
-function openToolsSection() {
-  setRightPanelTab("vocab");
-}
+let readerActions = null;
+let readerCore = null;
+let readerNavigation = null;
 
-function readerScrollContainer() {
-  return els.readerViewport || els.readerContent;
-}
+const readerSession = createReaderSession({ state });
+const { syncReaderState, resetReaderTransientState, resetReaderAnalysisCaches } = readerSession;
 
-function adjustReaderSettingsPanelPosition() {
-  const settingsPopover = document.getElementById("readerSettingsPopover");
-  const settingsPanel = document.getElementById("readerSettingsPanel");
-  if (!settingsPopover || !settingsPanel || !settingsPopover.open) {
-    return;
-  }
-  settingsPanel.style.setProperty("--reader-settings-shift-x", "0px");
-  const margin = 8;
-  const rect = settingsPanel.getBoundingClientRect();
-  let shiftX = 0;
-  if (rect.left < margin) {
-    shiftX += margin - rect.left;
-  }
-  if (rect.right > window.innerWidth - margin) {
-    shiftX -= rect.right - (window.innerWidth - margin);
-  }
-  if (Math.abs(shiftX) < 0.5) {
-    shiftX = 0;
-  }
-  settingsPanel.style.setProperty("--reader-settings-shift-x", `${Math.round(shiftX)}px`);
-}
+const readerUi = createReaderUi({
+  state,
+  els,
+  STORAGE_KEYS,
+  RIGHT_PANEL_TABS,
+  READER_FONT_MAP,
+  MOJI_SCHEME_MAP,
+  MOJI_WEB_HOME,
+  MOJI_WEB_SEARCH,
+  MAC_DICT_SCHEME,
+  saveJSON,
+  setStatus,
+  clampNumber,
+  syncReaderState,
+  normalizeReadingMode: (...args) => readerActions.normalizeReadingMode(...args),
+  isPagedMode: (...args) => readerActions.isPagedMode(...args),
+  syncPagedPageState: (...args) => readerNavigation.syncPagedPageState(...args),
+  stopAutoPage: (...args) => readerActions.stopAutoPage(...args),
+  scheduleDifficultyPaint,
+  applyVisibleDifficultyToDom,
+  restartAutoPage: () => readerActions.startAutoPage(),
+});
+const {
+  openToolsSection,
+  readerScrollContainer,
+  adjustReaderSettingsPanelPosition,
+  scheduleReaderSettingsPanelPosition,
+  normalizeMojiScheme,
+  normalizeReaderFont,
+  normalizeRightPanelTab,
+  onRightTabsClick,
+  setRightPanelTab,
+  renderRightTabs,
+  renderReadingModeUi,
+  renderAutoPageUi,
+  onDictLinkClick,
+  renderLookupPanel,
+  renderExplainPanel,
+  onSettingsChange,
+  applySettings,
+} = readerUi;
 
-function scheduleReaderSettingsPanelPosition() {
-  requestAnimationFrame(() => {
-    adjustReaderSettingsPanelPosition();
-  });
-}
+const readerSelection = createReaderSelection({
+  state,
+  els,
+  STORAGE_KEYS,
+  JP_WORD_RE,
+  MINI_DICT,
+  tokenizeText: (payload, options) => analysisService.tokenize(payload, options),
+  lookupWord: (payload, options) => dictionaryService.lookup(payload, options),
+  explainSentenceByAi: (payload, options) => analysisService.explain(payload, options),
+  ensureApiHealthFresh,
+  renderApiStatus,
+  getChapterById: (...args) => readerCore.getChapterById(...args),
+  clampChapterIndex: (...args) => readerNavigation.clampChapterIndex(...args),
+  syncReadingProgress: (...args) => readerCore.syncReadingProgress(...args),
+  syncReaderState,
+  persistCurrentChapterState,
+  renderBookMeta: (...args) => readerCore.renderBookMeta(...args),
+  renderChapterList: (...args) => readerCore.renderChapterList(...args),
+  renderHardWords,
+  scheduleDifficultyPaint,
+  findSentenceAt,
+  normalizeKnownWordCandidate,
+  isBoundary,
+  trackEvent,
+  saveJSON,
+  getJlptLevel,
+  renderLookupPanel: (...args) => readerUi.renderLookupPanel(...args),
+  renderStats,
+  updateBilling,
+  showToast,
+  renderReader: (...args) => readerCore.renderReader(...args),
+  renderExplainPanel: (...args) => readerUi.renderExplainPanel(...args),
+});
+const {
+  onReaderClick,
+  onReaderMouseUp,
+  onReaderTouchEnd,
+  getParagraphTokens,
+  extractSentenceExample,
+  lookupLocalDictionary,
+  stripWordNoise,
+  normalizeReading,
+  normalizeToken,
+  markSelection,
+  clearSelectionMark,
+  explainSentence,
+} = readerSelection;
+
+const readerAnnotations = createReaderAnnotations({
+  state,
+  els,
+  STORAGE_KEYS,
+  DAY_MS,
+  saveJSON,
+  setStatus,
+  appendListEmpty,
+  makeId,
+  chapterIndexById: (...args) => readerNavigation.chapterIndexById(...args),
+  getChapterById: (...args) => readerCore.getChapterById(...args),
+  syncReaderState,
+  persistCurrentChapterState,
+  ensureRenderedThrough: (...args) => readerCore.ensureRenderedThrough(...args),
+  ensureChapterLoaded: (...args) => readerCore.ensureChapterLoaded(...args),
+  renderBookMeta: (...args) => readerCore.renderBookMeta(...args),
+  renderChapterList: (...args) => readerCore.renderChapterList(...args),
+  renderReader: (...args) => readerCore.renderReader(...args),
+  renderStats,
+  markSelection: (...args) => readerSelection.markSelection(...args),
+  renderLookupPanel: (...args) => readerUi.renderLookupPanel(...args),
+  syncReadingProgress: (...args) => readerCore.syncReadingProgress(...args),
+  requestAnalyze: (...args) => readerActions.requestAnalyze(...args),
+  trackEvent,
+  formatDate,
+  csvEscape,
+  exportVocabByUser: (userId, options) => syncService.exportVocab(userId, options),
+  hasFeature,
+  openToolsSection: (...args) => readerUi.openToolsSection(...args),
+  setRightPanelTab: (...args) => readerUi.setRightPanelTab(...args),
+});
+const {
+  getNoteRanges,
+  findRangeHit,
+  onAddWord,
+  onAddNoteClick,
+  onSaveNote,
+  renderNotes,
+  onNoteListClick,
+  onAddBookmark,
+  renderBookmarks,
+  onBookmarkListClick,
+  jumpToPosition,
+  renderVocab,
+  onVocabAction,
+  exportVocabCsv,
+} = readerAnnotations;
+
+readerCore = createReaderCore({
+  state,
+  els,
+  SAMPLE_BOOK,
+  fetchJson,
+  wait,
+  checkApiHealth,
+  setStatus,
+  updateBilling,
+  normalizeReadingMode: (...args) => readerActions.normalizeReadingMode(...args),
+  clampChapterIndex: (...args) => readerNavigation.clampChapterIndex(...args),
+  chapterIndexById: (...args) => readerNavigation.chapterIndexById(...args),
+  syncReaderState,
+  resetReaderTransientState,
+  resetReaderAnalysisCaches,
+  stopAutoPage: (...args) => readerActions.stopAutoPage(...args),
+  persistBookState,
+  persistCurrentChapterState,
+  clearPersistedBookState,
+  renderAll,
+  renderHardWords,
+  requestAnalyze: (...args) => readerActions.requestAnalyze(...args),
+  readerScrollContainer: (...args) => readerUi.readerScrollContainer(...args),
+  scheduleDifficultyPaint,
+  markSelection: (...args) => readerSelection.markSelection(...args),
+  isPagedMode: (...args) => readerActions.isPagedMode(...args),
+  syncPagedPageState: (...args) => readerNavigation.syncPagedPageState(...args),
+  getKnownRanges,
+  getNoteRanges: (...args) => readerAnnotations.getNoteRanges(...args),
+  getDifficultyRanges,
+  getSentenceRangesForParagraph,
+  findRangeHit: (...args) => readerAnnotations.findRangeHit(...args),
+  shouldHighlightLevel,
+  clampNumber,
+});
+const {
+  hydrateBook,
+  normalizeBook,
+  currentChapterData,
+  getChapterById,
+  chapterIsLoaded,
+  mergeChapterPayload,
+  fetchBookMetadata,
+  fetchChapterPayload,
+  fetchSampleBook,
+  ensureChapterLoaded,
+  prefetchNextChapter,
+  syncReadingProgress,
+  bootstrapBookExperience,
+  onFileChange,
+  onLoadSampleBook,
+  sampleBookToImportFile,
+  importBookFile,
+  pollImportJob,
+  fetchImportedBook,
+  setBook,
+  initialRenderedChapterCount,
+  ensureRenderedThrough,
+  renderBookMeta,
+  renderChapterList,
+  chapterIndexesForRender,
+  renderLoadingChapterBlock,
+  renderChapterBlock,
+  renderReader,
+  updateChapterHeader,
+  updateTocHighlight,
+  scrollReaderToTop,
+  flashChapterHeader,
+} = readerCore;
+
+readerNavigation = createReaderNavigation({
+  state,
+  els,
+  isAccountModalOpen,
+  closeAccountModal,
+  normalizeReadingMode: (...args) => readerActions.normalizeReadingMode(...args),
+  isPagedMode: (...args) => readerActions.isPagedMode(...args),
+  syncReaderState,
+  initialRenderedChapterCount: (...args) => readerCore.initialRenderedChapterCount(...args),
+  ensureRenderedThrough: (...args) => readerCore.ensureRenderedThrough(...args),
+  persistCurrentChapterState,
+  renderReader: (...args) => readerCore.renderReader(...args),
+  renderHardWords,
+  scheduleDifficultyPaint,
+  updateChapterHeader: (...args) => readerCore.updateChapterHeader(...args),
+  updateTocHighlight: (...args) => readerCore.updateTocHighlight(...args),
+  ensureChapterLoaded: (...args) => readerCore.ensureChapterLoaded(...args),
+  renderAll,
+  prefetchNextChapter: (...args) => readerCore.prefetchNextChapter(...args),
+  syncReadingProgress: (...args) => readerCore.syncReadingProgress(...args),
+  readerScrollContainer: (...args) => readerUi.readerScrollContainer(...args),
+  setStatus,
+  renderBookMeta: (...args) => readerCore.renderBookMeta(...args),
+  renderChapterList: (...args) => readerCore.renderChapterList(...args),
+  scrollReaderToTop: (...args) => readerCore.scrollReaderToTop(...args),
+  flashChapterHeader: (...args) => readerCore.flashChapterHeader(...args),
+});
+const {
+  chapterIndexById,
+  clampChapterIndex,
+  onChapterListClick,
+  setCurrentChapter,
+  scrollToChapter,
+  onReaderScroll,
+  hasNextChapter,
+  hasPrevChapter,
+  getPagedStep,
+  syncPagedPageState,
+  getCurrentChapterPageCount,
+  updateReaderProgress,
+  loadChapterByIndex,
+  renderCurrentPage,
+  maybeLoadMoreChapters,
+  syncCurrentChapterByScroll,
+  onReaderHotkey,
+  onPrevPage,
+  onNextPage,
+  goNextPage,
+  goPrevPage,
+  triggerPageTurn,
+} = readerNavigation;
+
+readerActions = createReaderActions({
+  state,
+  STORAGE_KEYS,
+  saveJSON,
+  setStatus,
+  clampNumber,
+  applySettings: (...args) => readerUi.applySettings(...args),
+  renderAutoPageUi: (...args) => readerUi.renderAutoPageUi(...args),
+  renderReadingModeUi: (...args) => readerUi.renderReadingModeUi(...args),
+  syncReaderState,
+  stopAutoPageExternal: null,
+  renderReader: (...args) => readerCore.renderReader(...args),
+  scrollToChapter: (...args) => readerNavigation.scrollToChapter(...args),
+  getCurrentChapterPageCount: (...args) => readerNavigation.getCurrentChapterPageCount(...args),
+  renderCurrentPage: (...args) => readerNavigation.renderCurrentPage(...args),
+  goNextPage: (...args) => readerNavigation.goNextPage(...args),
+  clampChapterIndex: (...args) => readerNavigation.clampChapterIndex(...args),
+  initialRenderedChapterCount: (...args) => readerCore.initialRenderedChapterCount(...args),
+  analyzeBookVocabulary,
+});
+const {
+  normalizeReadingMode,
+  isPagedMode,
+  requestAnalyze,
+  onToggleAutoPage,
+  onToggleFocusMode,
+  startAutoPage,
+  stopAutoPage,
+  setReadingMode,
+  adjustFontSize,
+  adjustLineHeight,
+} = readerActions;
 
 function bindEvents() {
   els.fileInput.addEventListener("change", onFileChange);
@@ -467,1217 +844,90 @@ function renderAll() {
   renderBillingUi();
 }
 
-function hydrateBook() {
-  if (!state.book || !Array.isArray(state.book.chapters)) return;
-  state.book = normalizeBook(state.book);
-  state.currentChapter = clampChapterIndex(state.currentChapter);
-  state.scrollBaseChapter = state.currentChapter;
-  state.renderedChapterCount = initialRenderedChapterCount();
-  syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
+// Reader core/navigation/actions/session are delegated to features/reader modules above.
+
+const JLPT_LEVEL_ORDER = {
+  N1: 0,
+  N2: 1,
+  N3: 2,
+  N4: 3,
+  N5: 4,
+};
+
+function jlptLevelRank(level) {
+  return Number.isFinite(JLPT_LEVEL_ORDER[level]) ? JLPT_LEVEL_ORDER[level] : 99;
 }
 
-function normalizeBook(rawBook) {
-  const chaptersRaw = Array.isArray(rawBook.chapters) ? rawBook.chapters : [];
-  const chapters = chaptersRaw.map((item, idx) => {
-    const paragraphsSource = Array.isArray(item?.paragraphs) ? item.paragraphs : null;
-    const text = String(item?.text || "").replace(/\r/g, "").trim();
-    const paragraphs = (paragraphsSource || (text ? text.split(/\n+/) : []))
-      .map((line) => String(line || "").trim())
-      .filter(Boolean);
-    return {
-      id: String(item?.id || `ch-${idx + 1}`),
-      index: Number.isFinite(Number(item?.index)) ? Number(item.index) : idx,
-      title: String(item?.title || `Chapter ${idx + 1}`),
-      text: text || paragraphs.join("\n\n"),
-      paragraphs,
-      sourceType: String(item?.sourceType || rawBook?.format || "txt"),
-      sourceRef: String(item?.sourceRef || ""),
-      analysis:
-        item?.analysis && typeof item.analysis === "object"
-          ? {
-              chapterId: String(item.analysis.chapterId || item.id || `ch-${idx + 1}`),
-              sentences: Array.isArray(item.analysis.sentences) ? item.analysis.sentences : [],
-              tokens: Array.isArray(item.analysis.tokens) ? item.analysis.tokens : [],
-              jlptStats:
-                item.analysis.jlptStats && typeof item.analysis.jlptStats === "object"
-                  ? item.analysis.jlptStats
-                  : {},
-              difficultVocab: Array.isArray(item.analysis.difficultVocab)
-                ? item.analysis.difficultVocab
-                : [],
-              analysisVersion: String(item.analysis.analysis_version || item.analysis.analysisVersion || ""),
-              tokenizerVersion: String(item.analysis.tokenizer_version || item.analysis.tokenizerVersion || ""),
-              jlptVersion: String(item.analysis.jlpt_version || item.analysis.jlptVersion || ""),
-              dictVersion: String(item.analysis.dict_version || item.analysis.dictVersion || ""),
-              promptVersion: String(item.analysis.prompt_version || item.analysis.promptVersion || ""),
-            }
-          : null,
-    };
-  });
-
-  return {
-    id: String(rawBook.id || ""),
-    userId: String(rawBook.userId || ""),
-    title: String(rawBook.title || "Untitled"),
-    author: String(rawBook.author || rawBook.meta?.author || rawBook.metadata?.author || ""),
-    format: String(rawBook.format || "txt"),
-    chapterCount: Number(rawBook.chapterCount || chapters.length || 0),
-    normalizedVersion: Number(rawBook.normalizedVersion || 1),
-    importedAt: Number(rawBook.importedAt || 0),
-    sourceFileName: String(rawBook.sourceFileName || ""),
-    sampleSlug: String(rawBook.sampleSlug || ""),
-    stats: rawBook.stats && typeof rawBook.stats === "object" ? rawBook.stats : {},
-    progress: rawBook.progress && typeof rawBook.progress === "object" ? rawBook.progress : null,
-    chapters,
-  };
+function mergePreferredJlptLevel(current, next) {
+  const currentLevel = normalizeJlptLevel(current);
+  const nextLevel = normalizeJlptLevel(next);
+  if (!nextLevel) return currentLevel;
+  if (!currentLevel) return nextLevel;
+  return jlptLevelRank(nextLevel) < jlptLevelRank(currentLevel) ? nextLevel : currentLevel;
 }
 
-function currentChapterData() {
-  if (!state.book || !state.book.chapters.length) return null;
-  return state.book.chapters[clampChapterIndex(state.currentChapter)];
-}
-
-function getChapterById(chapterId) {
-  if (!state.book || !state.book.chapters.length) return null;
-  return state.book.chapters.find((chapter) => chapter.id === chapterId) || null;
-}
-
-function chapterIndexById(chapterId) {
-  if (!state.book || !state.book.chapters.length) return 0;
-  const idx = state.book.chapters.findIndex((chapter) => chapter.id === chapterId);
-  return idx >= 0 ? idx : 0;
-}
-
-function clampChapterIndex(index) {
-  if (!state.book || !state.book.chapters.length) return 0;
-  return Math.max(0, Math.min(Number(index) || 0, state.book.chapters.length - 1));
-}
-
-function chapterIsLoaded(chapter) {
-  return Boolean(chapter && Array.isArray(chapter.paragraphs) && chapter.paragraphs.length);
-}
-
-function mergeChapterPayload(chapterPayload) {
-  if (!state.book || !Array.isArray(state.book.chapters) || !chapterPayload) return null;
-  const chapterId = String(chapterPayload.id || "");
-  const index = state.book.chapters.findIndex((item) => item.id === chapterId);
-  if (index < 0) return null;
-  const normalized = normalizeBook({
-    ...state.book,
-    chapters: state.book.chapters.map((chapter, chapterIndex) =>
-      chapterIndex === index ? { ...chapter, ...chapterPayload } : chapter
-    ),
-  });
-  state.book = normalized;
-  persistBookState();
-  return state.book.chapters[index];
-}
-
-async function fetchBookMetadata(bookId) {
-  const payload = await fetchJson(
-    `/api/books/${encodeURIComponent(bookId)}?userId=${encodeURIComponent(state.sync.userId)}`,
-    { method: "GET" },
-    12000
-  );
-  if (!payload.ok || !payload.book) {
-    throw new Error(payload.error || "读取书籍目录失败");
-  }
-  return payload.book;
-}
-
-async function fetchChapterPayload(bookId, chapterId) {
-  const payload = await fetchJson(
-    `/api/books/${encodeURIComponent(bookId)}/chapters/${encodeURIComponent(
-      chapterId
-    )}?userId=${encodeURIComponent(state.sync.userId)}`,
-    { method: "GET" },
-    12000
-  );
-  if (!payload.ok || !payload.chapter) {
-    throw new Error(payload.error || "读取章节失败");
-  }
-  return payload.chapter;
-}
-
-async function fetchSampleBook() {
-  const payload = await fetchJson(
-    `/api/sample-book?userId=${encodeURIComponent(state.sync.userId)}`,
-    { method: "GET" },
-    12000
-  );
-  if (!payload.ok || !payload.book) {
-    throw new Error(payload.error || "示例书不可用");
-  }
-  return payload.book;
-}
-
-async function ensureChapterLoaded(chapterIndex, options = {}) {
-  const chapter = state.book?.chapters?.[clampChapterIndex(chapterIndex)];
-  if (!chapter || !state.book?.id || !state.apiOnline) return chapter || null;
-  if (chapterIsLoaded(chapter) && !options.force) return chapter;
-  if (options.prefetch !== true) {
-    setStatus(`正在加载 ${chapter.title} ...`);
-  }
-  const payload = await fetchChapterPayload(state.book.id, chapter.id);
-  return mergeChapterPayload(payload);
-}
-
-async function prefetchNextChapter(chapterIndex = state.currentChapter) {
-  if (!state.book?.id || !state.apiOnline) return;
-  const nextIndex = clampChapterIndex(Number(chapterIndex) + 1);
-  if (nextIndex === clampChapterIndex(chapterIndex)) return;
-  const nextChapter = state.book?.chapters?.[nextIndex];
-  if (!nextChapter || chapterIsLoaded(nextChapter)) return;
+async function ensureChapterForAnalysis(chapterIndex) {
+  const chapter = state.book?.chapters?.[chapterIndex];
+  if (!chapter) return null;
+  if (Array.isArray(chapter.paragraphs) && chapter.paragraphs.length) return chapter;
+  if (!state.apiOnline || !state.book?.id) return chapter;
   try {
-    await ensureChapterLoaded(nextIndex, { prefetch: true });
+    return (await ensureChapterLoaded(chapterIndex, { prefetch: true })) || state.book?.chapters?.[chapterIndex] || chapter;
   } catch {
-    // Ignore prefetch failures. Reading should stay uninterrupted.
+    return state.book?.chapters?.[chapterIndex] || chapter;
   }
 }
 
-async function syncReadingProgress(location = {}) {
-  if (!state.apiOnline || !state.book?.id) return;
-  const chapter = currentChapterData();
-  if (!chapter) return;
-  try {
-    await fetchJson(
-      `/api/books/${encodeURIComponent(state.book.id)}/progress`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: state.sync.userId,
-          chapterId: String(location.chapterId || chapter.id || ""),
-          chapterIndex: Number(location.chapterIndex ?? state.currentChapter) || 0,
-          paragraphIndex: Number(location.paraIndex ?? 0) || 0,
-          charIndex: Number(location.charIndex ?? 0) || 0,
-        }),
-      },
-      4000
-    );
-  } catch {
-    // Ignore progress sync failures. Local reading state remains primary.
-  }
-}
+async function collectChapterTokensForAnalysis(chapter, chapterIndex) {
+  const resolvedChapter = await ensureChapterForAnalysis(chapterIndex);
+  if (!resolvedChapter) return { chapter: null, tokens: [] };
 
-async function bootstrapBookExperience() {
-  if (state.book?.id && state.apiOnline) {
-    try {
-      const metadata = await fetchBookMetadata(state.book.id);
-      await setBook(normalizeBook(metadata), {
-        chapterIndex:
-          Number(metadata.progress?.chapterIndex) ||
-          Number(metadata.chapters?.findIndex?.((item) => item.id === metadata.progress?.chapterId)) ||
-          state.currentChapter,
-        syncProgress: false,
+  const analysisTokens = Array.isArray(resolvedChapter?.analysis?.tokens)
+    ? resolvedChapter.analysis.tokens.map(normalizeToken).filter((token) => token.surface)
+    : [];
+  if (shouldTrustAnalysisTokens(analysisTokens)) {
+    return { chapter: resolvedChapter, tokens: analysisTokens };
+  }
+
+  const paragraphs = Array.isArray(resolvedChapter?.paragraphs) ? resolvedChapter.paragraphs : [];
+  if (!paragraphs.length) {
+    return { chapter: resolvedChapter, tokens: [] };
+  }
+
+  const tokens = [];
+  for (let paraIndex = 0; paraIndex < paragraphs.length; paraIndex += 1) {
+    const paragraph = String(paragraphs[paraIndex] || "");
+    if (!paragraph) continue;
+    const paragraphTokens = await getParagraphTokens(resolvedChapter.id, paraIndex, paragraph);
+    paragraphTokens.map(normalizeToken).forEach((token) => {
+      tokens.push({
+        ...token,
+        paragraphIndex: Number(token.paragraphIndex ?? paraIndex) || paraIndex,
       });
-      return;
-    } catch {
-      // Fall through to sample fallback.
-    }
-  }
-  if (!state.book) {
-    await onLoadSampleBook({ silentStatus: true });
-  } else if (state.book?.id && state.apiOnline) {
-    try {
-      await ensureChapterLoaded(state.currentChapter, { prefetch: false });
-      renderAll();
-      void prefetchNextChapter(state.currentChapter);
-      if (normalizeReadingMode(state.settings.readingMode) === "scroll") {
-        const nextIndex = clampChapterIndex(state.currentChapter + 1);
-        if (nextIndex !== state.currentChapter) {
-          void ensureChapterLoaded(nextIndex, { prefetch: true }).then(() => {
-            renderReader({ preserveScroll: true });
-          });
-        }
-      }
-    } catch {
-      // Keep local snapshot if refresh fails.
-    }
-  }
-}
-
-async function onFileChange(event) {
-  const [file] = event.target.files || [];
-  if (!file) return;
-  await importBookFile(file);
-  els.fileInput.value = "";
-}
-
-async function onLoadSampleBook(options = {}) {
-  if (!state.apiOnline) {
-    await checkApiHealth();
-  }
-  try {
-    if (state.apiOnline) {
-      const sampleBook = await fetchSampleBook();
-      await setBook(normalizeBook(sampleBook), {
-        chapterIndex: Number(sampleBook.progress?.chapterIndex) || 0,
-        syncProgress: false,
-      });
-    } else {
-      await setBook(normalizeBook(SAMPLE_BOOK), { syncProgress: false });
-    }
-    if (!options.silentStatus) {
-      setStatus("示例书籍已就绪。");
-    }
-  } catch (error) {
-    await setBook(normalizeBook(SAMPLE_BOOK), { syncProgress: false });
-    if (!options.silentStatus) {
-      setStatus(`示例书载入失败，已回退本地示例：${error.message}`, true);
-    }
-  }
-}
-
-function sampleBookToImportFile() {
-  const text = SAMPLE_BOOK.chapters
-    .map((chapter) => `${chapter.title}\n${chapter.text}`)
-    .join("\n\n");
-  return new File([text], "sample-novel.txt", { type: "text/plain" });
-}
-
-async function importBookFile(file, options = {}) {
-  const ext = file.name.split(".").pop().toLowerCase();
-  const isTxt = ext === "txt";
-  const isGuest = state.sync.accountMode !== "registered";
-  setStatus(`正在导入 ${file.name} ...`);
-
-  if (!isTxt && !state.apiOnline) {
-    await checkApiHealth();
-  }
-
-  if (state.apiOnline) {
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("userId", state.sync.userId || "");
-      const payload = await fetchJson("/api/books/import", {
-        method: "POST",
-        body: formData,
-      }, 12000);
-      const jobId = String(payload.jobId || payload.job?.jobId || "");
-      if (!jobId) throw new Error("导入任务未返回 jobId");
-      state.activeImportJobId = jobId;
-      const job = await pollImportJob(jobId);
-      const importedBook = await fetchImportedBook(job.bookId);
-      await setBook(normalizeBook(importedBook), {
-        chapterIndex: Number(importedBook.progress?.chapterIndex) || 0,
-        syncProgress: false,
-        persistLocal: !isGuest,
-      });
-      setStatus(
-        String(
-          options.successMessage ||
-            (isGuest
-              ? `已导入 ${file.name}（游客会话内可读，刷新后可能消失）。`
-              : `已导入 ${file.name}，共 ${state.book.chapters.length} 章。`)
-        )
-      );
-      return;
-    } catch (error) {
-      if (error?.payload?.billing) {
-        updateBilling(error.payload.billing);
-      }
-      setStatus(`后端导入失败：${error.message}`, true);
-    }
-  }
-
-  if (isTxt) {
-    const text = await file.text();
-    const book = normalizeBook({
-      title: file.name.replace(/\.txt$/i, ""),
-      format: "txt",
-      chapters: [{ title: "正文", text }],
-    });
-    await setBook(book, { syncProgress: false, persistLocal: !isGuest });
-    setStatus(isGuest ? "已按 TXT 方式导入（游客会话内可读）。" : "已按 TXT 方式导入。");
-    return;
-  }
-
-  const openHint =
-    window.location.protocol === "file:"
-      ? "当前是本地文件打开，请改为访问 `http://127.0.0.1:8000`。"
-      : "";
-  setStatus(
-    `该格式需要后端 API。请使用 \`python3 backend/server.py\` 启动。${openHint}`,
-    true
-  );
-}
-
-async function pollImportJob(jobId) {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < 120000) {
-    const payload = await fetchJson(`/api/import-jobs/${encodeURIComponent(jobId)}`, {
-      method: "GET",
-    });
-    const job = payload.job || {};
-    if (job.status === "completed") return job;
-    if (job.status === "failed") {
-      throw new Error(job.error || "导入失败");
-    }
-    await wait(300);
-  }
-  throw new Error("导入超时");
-}
-
-async function fetchImportedBook(bookId) {
-  return fetchBookMetadata(bookId);
-}
-
-async function setBook(book, options = {}) {
-  stopAutoPage();
-  state.book = normalizeBook(book);
-  const initialChapter =
-    Number.isFinite(Number(options.chapterIndex)) && Number(options.chapterIndex) >= 0
-      ? Number(options.chapterIndex)
-      : Number(state.book?.progress?.chapterIndex) || 0;
-  state.currentChapter = clampChapterIndex(initialChapter);
-  state.scrollBaseChapter = state.currentChapter;
-  state.renderedChapterCount = initialRenderedChapterCount();
-  syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
-  state.selected = null;
-  state.selectedSentence = null;
-  state.explain = {
-    loading: false,
-    sentenceId: "",
-    cached: false,
-    result: null,
-    error: "",
-  };
-  state.selectedRange = null;
-  state.lastCursor = {
-    chapterId: state.book?.chapters?.[state.currentChapter]?.id || "",
-    chapterIndex: state.currentChapter,
-    paraIndex: 0,
-    charIndex: 0,
-  };
-  state.paragraphTokensCache.clear();
-  state.difficultyRangesCache.clear();
-  state.difficultyPending.clear();
-  state.hardWordsByChapter = new Map();
-  state.bookFrequencyStats = null;
-  state.analysisReady = false;
-  persistBookState({ persistLocal: options.persistLocal });
-  renderAll();
-  readerScrollContainer().scrollTop = 0;
-  requestAnalyze(true);
-  if (state.apiOnline && state.book?.id) {
-    try {
-      await ensureChapterLoaded(state.currentChapter, { prefetch: false });
-      renderAll();
-      void prefetchNextChapter(state.currentChapter);
-      if (normalizeReadingMode(state.settings.readingMode) === "scroll") {
-        const nextIndex = clampChapterIndex(state.currentChapter + 1);
-        if (nextIndex !== state.currentChapter) {
-          void ensureChapterLoaded(nextIndex, { prefetch: true }).then(() => {
-            renderReader({ preserveScroll: true });
-          });
-        }
-      }
-      if (options.syncProgress !== false) {
-        void syncReadingProgress();
-      }
-    } catch (error) {
-      setStatus(`章节加载失败：${error.message}`, true);
-    }
-  }
-}
-
-function initialRenderedChapterCount() {
-  if (!state.book?.chapters?.length) return 0;
-  return normalizeReadingMode(state.settings.readingMode) === "scroll" ? 2 : 1;
-}
-
-function ensureRenderedThrough(chapterIndex) {
-  if (normalizeReadingMode(state.settings.readingMode) !== "scroll") return true;
-  const base = clampChapterIndex(state.scrollBaseChapter);
-  if (chapterIndex < base) {
-    state.scrollBaseChapter = chapterIndex;
-    state.renderedChapterCount = initialRenderedChapterCount();
-    return true;
-  }
-  const needed = chapterIndex - base + 1;
-  if (needed > state.renderedChapterCount) {
-    state.renderedChapterCount = needed;
-  }
-  return true;
-}
-
-function renderBookMeta() {
-  if (!state.book || !state.book.chapters.length) {
-    els.bookTitle.textContent = "未导入书籍";
-    if (els.bookAuthor) {
-      els.bookAuthor.hidden = true;
-      els.bookAuthor.textContent = "作者: -";
-    }
-    els.bookMeta.textContent = "格式: -";
-    els.chapterCount.textContent = "章节: 0";
-    els.chapterTitle.textContent = "阅读区";
-    els.chapterProgress.textContent = "章节 0 / 0";
-    return;
-  }
-  const chapter = currentChapterData();
-  els.bookTitle.textContent = state.book.title;
-  const author = String(state.book.author || "").trim();
-  if (els.bookAuthor) {
-    els.bookAuthor.hidden = !author;
-    els.bookAuthor.textContent = `作者: ${author || "-"}`;
-  }
-  els.bookMeta.textContent = `格式: ${state.book.format.toUpperCase()}`;
-  els.chapterCount.textContent = `章节: ${state.book.chapters.length}`;
-  els.chapterTitle.textContent = chapter.title;
-  els.chapterProgress.textContent = `章节 ${state.currentChapter + 1} / ${
-    state.book.chapters.length
-  }`;
-}
-
-function renderChapterList() {
-  els.chapterList.textContent = "";
-  if (!state.book || !state.book.chapters.length) {
-    appendListEmpty(els.chapterList, "暂无章节");
-    return;
-  }
-  state.book.chapters.forEach((chapter, idx) => {
-    const li = document.createElement("li");
-    li.className = `simple-item${idx === state.currentChapter ? " active" : ""}`;
-    const button = document.createElement("button");
-    button.className = "tiny-btn";
-    button.dataset.chapter = String(idx);
-    button.textContent = chapter.title;
-    li.appendChild(button);
-    els.chapterList.appendChild(li);
-  });
-}
-
-function onChapterListClick(event) {
-  const button = event.target.closest("[data-chapter]");
-  if (!button) return;
-  const chapterIndex = Number(button.dataset.chapter);
-  void setCurrentChapter(chapterIndex);
-}
-
-async function setCurrentChapter(index) {
-  state.currentChapter = clampChapterIndex(index);
-  if (normalizeReadingMode(state.settings.readingMode) === "scroll") {
-    state.scrollBaseChapter = state.currentChapter;
-    state.renderedChapterCount = initialRenderedChapterCount();
-  } else {
-    state.renderedChapterCount = 1;
-  }
-  syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
-  ensureRenderedThrough(state.currentChapter);
-  updateChapterHeader();
-  updateTocHighlight();
-  persistCurrentChapterState();
-  renderReader({ preserveScroll: false });
-  renderHardWords();
-  scheduleDifficultyPaint();
-  if (isPagedMode()) {
-    renderCurrentPage();
-  } else {
-    scrollToChapter(state.currentChapter, true);
-  }
-  try {
-    await ensureChapterLoaded(state.currentChapter, { prefetch: false });
-    renderAll();
-    if (isPagedMode()) {
-      syncReaderState({ currentPageIndex: 0 });
-      renderCurrentPage();
-    }
-    void prefetchNextChapter(state.currentChapter);
-    if (!isPagedMode()) {
-      const nextIndex = clampChapterIndex(state.currentChapter + 1);
-      if (nextIndex !== state.currentChapter) {
-        void ensureChapterLoaded(nextIndex, { prefetch: true }).then(() => {
-          renderReader({ preserveScroll: true });
-        });
-      }
-    }
-    updateReaderProgress();
-  } catch (error) {
-    setStatus(`章节加载失败：${error.message}`, true);
-  }
-}
-
-function scrollToChapter(index, smooth = false) {
-  const chapterIndex = clampChapterIndex(index);
-  const scrollContainer = readerScrollContainer();
-  if (normalizeReadingMode(state.settings.readingMode) === "scroll") {
-    const block = els.readerContent.querySelector(`.chapter-block[data-chapter="${chapterIndex}"]`);
-    if (block) {
-      scrollContainer.scrollTo({
-        top: Math.max(0, block.offsetTop - 6),
-        behavior: smooth ? "smooth" : "auto",
-      });
-      return;
-    }
-  }
-  scrollContainer.scrollTo({
-    top: 0,
-    behavior: smooth ? "smooth" : "auto",
-  });
-}
-
-function chapterIndexesForRender() {
-  if (!state.book || !state.book.chapters.length) return [];
-  const mode = normalizeReadingMode(state.settings.readingMode);
-  if (mode === "paged") {
-    return [clampChapterIndex(state.currentChapter)];
-  }
-  const base = clampChapterIndex(state.scrollBaseChapter);
-  state.scrollBaseChapter = base;
-  const maxCount = Math.max(1, state.book.chapters.length - base);
-  const fallbackCount = initialRenderedChapterCount();
-  state.renderedChapterCount = clampNumber(
-    Number(state.renderedChapterCount) || fallbackCount,
-    1,
-    maxCount
-  );
-  const indexes = [];
-  for (let offset = 0; offset < state.renderedChapterCount; offset += 1) {
-    indexes.push(base + offset);
-  }
-  return indexes;
-}
-
-function renderLoadingChapterBlock(chapter, chapterIndex) {
-  const block = document.createElement("section");
-  block.className = "chapter-block loading";
-  block.dataset.chapter = String(chapterIndex);
-  block.dataset.chapterId = chapter.id;
-
-  const heading = document.createElement("h3");
-  heading.className = "chapter-heading";
-  heading.textContent = `${chapterIndex + 1}. ${chapter.title}`;
-  block.appendChild(heading);
-
-  const p = document.createElement("p");
-  p.className = "empty-tip";
-  p.textContent = `正在加载 ${chapter.title} ...`;
-  block.appendChild(p);
-  return block;
-}
-
-function renderChapterBlock(chapter, chapterIndex) {
-  const block = document.createElement("section");
-  block.className = "chapter-block";
-  block.dataset.chapter = String(chapterIndex);
-  block.dataset.chapterId = chapter.id;
-
-  const heading = document.createElement("h3");
-  heading.className = "chapter-heading";
-  heading.textContent = `${chapterIndex + 1}. ${chapter.title}`;
-  block.appendChild(heading);
-
-  chapter.paragraphs.forEach((paragraph, paraIndex) => {
-    const para = document.createElement("p");
-    para.className = "reader-para";
-    para.dataset.chapter = String(chapterIndex);
-    para.dataset.chapterId = chapter.id;
-    para.dataset.pindex = String(paraIndex);
-    para.setAttribute("data-testid", `paragraph-${chapter.id}-${paraIndex}`);
-
-    const knownRanges = getKnownRanges(paragraph);
-    const noteRanges = getNoteRanges(chapter.id, paraIndex);
-    const difficultyRanges = getDifficultyRanges(chapter.id, paraIndex);
-
-    const sentenceRanges = getSentenceRangesForParagraph(chapter, paraIndex, paragraph);
-    sentenceRanges.forEach((sentenceRange) => {
-      const sentenceEl = document.createElement("span");
-      sentenceEl.className = "sentence-segment";
-      sentenceEl.dataset.sentenceId = sentenceRange.id;
-      sentenceEl.dataset.chapterId = chapter.id;
-      sentenceEl.dataset.pindex = String(paraIndex);
-      sentenceEl.dataset.start = String(sentenceRange.start);
-      sentenceEl.dataset.end = String(sentenceRange.end);
-      sentenceEl.setAttribute("data-testid", `sentence-${chapter.id}-${paraIndex}-${sentenceRange.id}`);
-      if (state.selectedSentence?.id === sentenceRange.id) {
-        sentenceEl.classList.add("active");
-      }
-
-      for (let i = sentenceRange.start; i < sentenceRange.end; i += 1) {
-        const span = document.createElement("span");
-        span.className = "jp-char";
-        span.dataset.index = String(i);
-        span.textContent = paragraph[i];
-
-        const knownHit = findRangeHit(knownRanges, i);
-        if (knownHit) {
-          span.classList.add("known");
-          span.dataset.knownWord = knownHit.word;
-        }
-        const noteHit = findRangeHit(noteRanges, i);
-        if (noteHit) {
-          span.classList.add("annotated");
-        }
-        const difficultyHit = findRangeHit(difficultyRanges, i);
-        if (difficultyHit?.level) {
-          span.setAttribute("data-testid", "jlpt-token");
-        }
-        if (difficultyHit?.level === "N2" && shouldHighlightLevel("N2")) {
-          span.classList.add("jlpt-n2");
-        }
-        if (difficultyHit?.level === "N1" && shouldHighlightLevel("N1")) {
-          span.classList.add("jlpt-n1");
-        }
-        if (difficultyHit?.level === "N3" && shouldHighlightLevel("N3")) {
-          span.classList.add("jlpt-n3");
-        }
-        sentenceEl.appendChild(span);
-      }
-      para.appendChild(sentenceEl);
-    });
-    if (!sentenceRanges.length) {
-      for (let i = 0; i < paragraph.length; i += 1) {
-        const span = document.createElement("span");
-        span.className = "jp-char";
-        span.dataset.index = String(i);
-        span.textContent = paragraph[i];
-        para.appendChild(span);
-      }
-    }
-    block.appendChild(para);
-  });
-
-  return block;
-}
-
-function renderReader(options = {}) {
-  const preserveScroll = options.preserveScroll !== false;
-  const scrollContainer = readerScrollContainer();
-  const prevScrollTop = scrollContainer.scrollTop;
-  els.readerContent.textContent = "";
-  if (!state.book || !state.book.chapters.length) {
-    const p = document.createElement("p");
-    p.className = "empty-tip";
-    p.textContent = "先导入书籍，开始阅读。";
-    els.readerContent.appendChild(p);
-    return;
-  }
-  const chapterIndexes = chapterIndexesForRender();
-  chapterIndexes.forEach((chapterIndex) => {
-    const chapter = state.book.chapters[chapterIndex];
-    if (!chapter) return;
-    if (!chapterIsLoaded(chapter)) {
-      els.readerContent.appendChild(renderLoadingChapterBlock(chapter, chapterIndex));
-      return;
-    }
-    els.readerContent.appendChild(renderChapterBlock(chapter, chapterIndex));
-  });
-
-  scheduleDifficultyPaint();
-  markSelection();
-  if (preserveScroll) {
-    const viewport = scrollContainer.clientHeight;
-    const maxScrollTop = Math.max(0, scrollContainer.scrollHeight - viewport);
-    scrollContainer.scrollTop = clampNumber(prevScrollTop, 0, maxScrollTop);
-  }
-  if (isPagedMode()) {
-    syncPagedPageState();
-  }
-}
-
-function onReaderScroll() {
-  if (isPagedMode()) {
-    syncPagedPageState();
-    return;
-  }
-  if (state.scrollTicking) return;
-  state.scrollTicking = true;
-  requestAnimationFrame(() => {
-    state.scrollTicking = false;
-    syncCurrentChapterByScroll();
-    maybeLoadMoreChapters();
-  });
-}
-
-function isPagedMode() {
-  return normalizeReadingMode(state.settings.readingMode) === "paged";
-}
-
-function hasNextChapter() {
-  if (!state.book?.chapters?.length) return false;
-  return state.currentChapter < state.book.chapters.length - 1;
-}
-
-function hasPrevChapter() {
-  if (!state.book?.chapters?.length) return false;
-  return state.currentChapter > 0;
-}
-
-function getPagedStep(viewportHeight = readerScrollContainer().clientHeight) {
-  return Math.max(120, Math.floor(Math.max(1, viewportHeight) * 0.92));
-}
-
-function syncReaderState(partial = {}) {
-  state.reader = {
-    ...state.reader,
-    mode: normalizeReadingMode(state.settings.readingMode),
-    currentChapterIndex: clampChapterIndex(state.currentChapter),
-    currentPageIndex: Math.max(0, Number(state.reader?.currentPageIndex) || 0),
-    totalPagesInChapter: Math.max(1, Number(state.reader?.totalPagesInChapter) || 1),
-    ...partial,
-  };
-}
-
-function syncPagedPageState() {
-  if (!state.book?.chapters?.length || !isPagedMode()) {
-    syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
-    return { currentPageIndex: 0, totalPagesInChapter: 1, maxScrollTop: 0, step: 1 };
-  }
-  const scrollContainer = readerScrollContainer();
-  const viewport = Math.max(1, scrollContainer.clientHeight || 1);
-  const step = getPagedStep(viewport);
-  const maxScrollTop = Math.max(0, scrollContainer.scrollHeight - viewport);
-  const totalPagesInChapter = Math.max(1, Math.floor(maxScrollTop / step) + 1);
-  const currentPageIndex = clampNumber(
-    Math.round((scrollContainer.scrollTop || 0) / step),
-    0,
-    totalPagesInChapter - 1
-  );
-  syncReaderState({ currentPageIndex, totalPagesInChapter });
-  return { currentPageIndex, totalPagesInChapter, maxScrollTop, step };
-}
-
-function getCurrentChapterPageCount() {
-  return syncPagedPageState().totalPagesInChapter;
-}
-
-function updateChapterHeader(options = {}) {
-  renderBookMeta();
-  if (options.flash) {
-    flashChapterHeader();
-  }
-}
-
-function updateTocHighlight() {
-  renderChapterList();
-}
-
-function updateReaderProgress(location = {}) {
-  persistCurrentChapterState();
-  void syncReadingProgress(location);
-}
-
-function scrollReaderToTop(smooth = false) {
-  const scrollContainer = readerScrollContainer();
-  if (scrollContainer && scrollContainer !== document.body && scrollContainer !== document.documentElement) {
-    scrollContainer.scrollTo({
-      top: 0,
-      behavior: smooth ? "smooth" : "auto",
-    });
-    return;
-  }
-  els.chapterTitle?.scrollIntoView({
-    behavior: smooth ? "smooth" : "auto",
-    block: "start",
-  });
-}
-
-function flashChapterHeader() {
-  if (!els.chapterTitle) return;
-  els.chapterTitle.classList.remove("chapter-title-flash");
-  void els.chapterTitle.offsetWidth;
-  els.chapterTitle.classList.add("chapter-title-flash");
-  if (state.chapterTitleFlashTimerId) {
-    clearTimeout(state.chapterTitleFlashTimerId);
-  }
-  state.chapterTitleFlashTimerId = setTimeout(() => {
-    els.chapterTitle.classList.remove("chapter-title-flash");
-    state.chapterTitleFlashTimerId = null;
-  }, 680);
-}
-
-async function loadChapterByIndex(index) {
-  if (!state.book?.chapters?.length) return false;
-  const chapterIndex = clampChapterIndex(index);
-  state.currentChapter = chapterIndex;
-  if (isPagedMode()) {
-    state.renderedChapterCount = 1;
-  } else {
-    state.scrollBaseChapter = state.currentChapter;
-    state.renderedChapterCount = initialRenderedChapterCount();
-  }
-  persistCurrentChapterState();
-  ensureRenderedThrough(state.currentChapter);
-  try {
-    await ensureChapterLoaded(state.currentChapter, { prefetch: false });
-  } catch (error) {
-    setStatus(`章节加载失败：${error.message}`, true);
-    return false;
-  }
-  renderReader({ preserveScroll: false });
-  renderHardWords();
-  scheduleDifficultyPaint();
-  syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
-  void prefetchNextChapter(state.currentChapter);
-  return true;
-}
-
-function renderCurrentPage(options = {}) {
-  if (!isPagedMode()) return;
-  const scrollContainer = readerScrollContainer();
-  const viewport = Math.max(1, scrollContainer.clientHeight || 1);
-  const step = getPagedStep(viewport);
-  const maxScrollTop = Math.max(0, scrollContainer.scrollHeight - viewport);
-  const totalPagesInChapter = Math.max(1, Math.floor(maxScrollTop / step) + 1);
-  const currentPageIndex = clampNumber(
-    Number(state.reader?.currentPageIndex) || 0,
-    0,
-    totalPagesInChapter - 1
-  );
-  const targetTop = Math.min(currentPageIndex * step, maxScrollTop);
-  syncReaderState({ currentPageIndex, totalPagesInChapter });
-  scrollContainer.scrollTo({
-    top: targetTop,
-    behavior: options.smooth ? "smooth" : "auto",
-  });
-}
-
-function maybeLoadMoreChapters() {
-  if (normalizeReadingMode(state.settings.readingMode) !== "scroll") return;
-  if (!state.book || !state.book.chapters.length) return;
-  const base = clampChapterIndex(state.scrollBaseChapter);
-  const maxCount = Math.max(1, state.book.chapters.length - base);
-  if (state.renderedChapterCount >= maxCount) return;
-  const scrollContainer = readerScrollContainer();
-  const viewport = scrollContainer.clientHeight;
-  const maxScrollTop = Math.max(0, scrollContainer.scrollHeight - viewport);
-  const current = scrollContainer.scrollTop;
-  if (current < maxScrollTop - 200) return;
-
-  const before = state.renderedChapterCount;
-  state.renderedChapterCount = Math.min(maxCount, before + 2);
-  if (state.renderedChapterCount !== before) {
-    renderReader({ preserveScroll: true });
-    const tailChapterIndex = base + state.renderedChapterCount - 1;
-    void ensureChapterLoaded(tailChapterIndex, { prefetch: true }).then(() => {
-      renderReader({ preserveScroll: true });
     });
   }
+  return { chapter: resolvedChapter, tokens };
 }
 
-function syncCurrentChapterByScroll() {
-  if (!state.book || !state.book.chapters.length) return;
-  const containerRect = readerScrollContainer().getBoundingClientRect();
-  const blocks = els.readerContent.querySelectorAll(".chapter-block");
-  let bestIdx = state.currentChapter;
-  let bestDist = Number.POSITIVE_INFINITY;
-
-  blocks.forEach((block) => {
-    const rect = block.getBoundingClientRect();
-    if (rect.bottom < containerRect.top + 10 || rect.top > containerRect.bottom - 10) return;
-    const idx = Number(block.dataset.chapter);
-    const dist = Math.abs(rect.top - containerRect.top - 6);
-    if (dist < bestDist) {
-      bestDist = dist;
-      bestIdx = idx;
-    }
-  });
-
-  if (bestIdx !== state.currentChapter) {
-    state.currentChapter = clampChapterIndex(bestIdx);
-    syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
-    persistCurrentChapterState();
-    renderBookMeta();
-    renderChapterList();
-    renderHardWords();
-    scheduleDifficultyPaint();
-  }
-}
-
-function onReaderHotkey(event) {
-  if (event.key === "Escape" && isAccountModalOpen()) {
-    event.preventDefault();
-    closeAccountModal();
-    return;
-  }
-  const target = event.target;
-  const tag = target && target.tagName ? target.tagName.toLowerCase() : "";
-  if (tag === "input" || tag === "textarea" || tag === "select" || target?.isContentEditable) {
-    return;
-  }
-  if (!isPagedMode()) return;
-  if (event.key === "PageDown" || event.key === "ArrowRight") {
-    event.preventDefault();
-    onNextPage();
-  } else if (event.key === "PageUp" || event.key === "ArrowLeft") {
-    event.preventDefault();
-    onPrevPage();
-  }
-}
-
-function onPrevPage() {
-  void goPrevPage();
-}
-
-function onNextPage() {
-  void goNextPage();
-}
-
-async function goNextPage() {
-  if (!state.book?.chapters?.length || !isPagedMode()) return false;
-  if (state.pageNavInFlight) return false;
-  state.pageNavInFlight = true;
-  try {
-    const { currentPageIndex, totalPagesInChapter } = syncPagedPageState();
-    const lastPageIndex = Math.max(0, totalPagesInChapter - 1);
-    if (currentPageIndex < lastPageIndex) {
-      syncReaderState({ currentPageIndex: currentPageIndex + 1, totalPagesInChapter });
-      triggerPageTurn("next");
-      renderCurrentPage({ smooth: true });
-      updateReaderProgress();
-      return true;
-    }
-
-    if (!hasNextChapter()) return false;
-    const nextChapterIndex = clampChapterIndex(state.currentChapter + 1);
-    const loaded = await loadChapterByIndex(nextChapterIndex);
-    if (!loaded) return false;
-
-    scrollReaderToTop(false);
-    syncReaderState({ currentPageIndex: 0, totalPagesInChapter: getCurrentChapterPageCount() });
-    triggerPageTurn("next");
-    renderCurrentPage();
-    scrollReaderToTop(true);
-    updateChapterHeader({ flash: true });
-    updateTocHighlight();
-    updateReaderProgress();
-    return true;
-  } finally {
-    state.pageNavInFlight = false;
-  }
-}
-
-async function goPrevPage() {
-  if (!state.book?.chapters?.length || !isPagedMode()) return false;
-  if (state.pageNavInFlight) return false;
-  state.pageNavInFlight = true;
-  try {
-    const { currentPageIndex, totalPagesInChapter } = syncPagedPageState();
-    if (currentPageIndex > 0) {
-      syncReaderState({ currentPageIndex: currentPageIndex - 1, totalPagesInChapter });
-      triggerPageTurn("prev");
-      renderCurrentPage({ smooth: true });
-      updateReaderProgress();
-      return true;
-    }
-
-    if (!hasPrevChapter()) return false;
-    const prevChapterIndex = clampChapterIndex(state.currentChapter - 1);
-    const loaded = await loadChapterByIndex(prevChapterIndex);
-    if (!loaded) return false;
-
-    scrollReaderToTop(false);
-    const totalPages = getCurrentChapterPageCount();
-    syncReaderState({
-      currentPageIndex: Math.max(0, totalPages - 1),
-      totalPagesInChapter: totalPages,
-    });
-    triggerPageTurn("prev");
-    renderCurrentPage();
-    updateChapterHeader({ flash: true });
-    updateTocHighlight();
-    updateReaderProgress();
-    return true;
-  } finally {
-    state.pageNavInFlight = false;
-  }
-}
-
-function triggerPageTurn(direction) {
-  const className = direction === "prev" ? "page-turn-prev" : "page-turn-next";
-  els.readerContent.classList.remove("page-turn-prev", "page-turn-next");
-  void els.readerContent.offsetWidth;
-  els.readerContent.classList.add(className);
-  if (state.pageTurnTimerId) {
-    clearTimeout(state.pageTurnTimerId);
-  }
-  state.pageTurnTimerId = setTimeout(() => {
-    els.readerContent.classList.remove("page-turn-prev", "page-turn-next");
-    state.pageTurnTimerId = null;
-  }, 320);
-}
-
-function onToggleAutoPage() {
-  if (normalizeReadingMode(state.settings.readingMode) !== "paged") {
-    setStatus("自动翻页仅在分页模式下可用。");
-    return;
-  }
-  if (state.autoPageTimerId) {
-    stopAutoPage();
-    setStatus("自动翻页已关闭。");
-  } else {
-    startAutoPage();
-    setStatus("自动翻页已开启。");
-  }
-}
-
-function onToggleFocusMode() {
-  state.settings.focusMode = !Boolean(state.settings.focusMode);
-  saveJSON(STORAGE_KEYS.settings, state.settings);
-  applySettings();
-  setStatus(state.settings.focusMode ? "专注模式已开启。" : "专注模式已关闭。");
-}
-
-function onRightTabsClick(event) {
-  const button = event.target.closest("[data-tab]");
-  if (!button) return;
-  setRightPanelTab(button.dataset.tab);
-}
-
-function setRightPanelTab(tab, persist = true) {
-  const nextTab = normalizeRightPanelTab(tab);
-  if (state.settings.rightPanelTab === nextTab) return;
-  state.settings.rightPanelTab = nextTab;
-  if (persist) {
-    saveJSON(STORAGE_KEYS.settings, state.settings);
-  }
-  renderRightTabs();
-}
-
-function renderRightTabs() {
-  const activeTab = normalizeRightPanelTab(state.settings.rightPanelTab);
-  if (!els.rightTabs) return;
-  const tabButtons = els.rightTabs.querySelectorAll("[data-tab]");
-  tabButtons.forEach((button) => {
-    const isActive = button.dataset.tab === activeTab;
-    button.classList.toggle("active", isActive);
-    button.setAttribute("aria-selected", isActive ? "true" : "false");
-  });
-  document.querySelectorAll(".right-pane[data-pane]").forEach((pane) => {
-    const isActive = pane.dataset.pane === activeTab;
-    pane.classList.toggle("active", isActive);
-    pane.hidden = !isActive;
-  });
-}
-
-function startAutoPage() {
-  if (!state.book || !state.book.chapters.length) {
-    setStatus("请先导入书籍后再开启自动翻页。", true);
-    return;
-  }
-  if (normalizeReadingMode(state.settings.readingMode) !== "paged") {
-    setStatus("自动翻页仅在分页模式下可用。", true);
-    return;
-  }
-  stopAutoPage();
-  const seconds = clampNumber(Number(state.settings.autoPageSeconds) || 12, 6, 40);
-  state.settings.autoPageSeconds = seconds;
-  saveJSON(STORAGE_KEYS.settings, state.settings);
-  state.autoPageTimerId = setInterval(() => {
-    if (state.autoPageTicking) return;
-    state.autoPageTicking = true;
-    void goNextPage()
-      .then((moved) => {
-        if (!moved) {
-          stopAutoPage();
-          setStatus("已到末页，自动翻页停止。");
-        }
-      })
-      .finally(() => {
-        state.autoPageTicking = false;
-      });
-  }, seconds * 1000);
-  renderAutoPageUi();
-}
-
-function stopAutoPage() {
-  if (!state.autoPageTimerId) return;
-  clearInterval(state.autoPageTimerId);
-  state.autoPageTimerId = null;
-  state.autoPageTicking = false;
-  renderAutoPageUi();
-}
-
-function renderAutoPageUi() {
-  const pagedMode = normalizeReadingMode(state.settings.readingMode) === "paged";
-  const on = pagedMode && Boolean(state.autoPageTimerId);
-  els.toggleAutoPageBtn.hidden = !pagedMode;
-  els.toggleAutoPageBtn.disabled = !pagedMode;
-  els.toggleAutoPageBtn.textContent = `自动翻页: ${on ? "开" : "关"}`;
-  els.toggleAutoPageBtn.classList.toggle("auto-on", on);
-}
-
-function normalizeReadingMode(value) {
-  return String(value || "").trim() === "paged" ? "paged" : "scroll";
-}
-
-function setReadingMode(mode, options = {}) {
-  const nextMode = normalizeReadingMode(mode);
-  const prevMode = normalizeReadingMode(state.settings.readingMode);
-  if (nextMode === prevMode) {
-    syncReaderState();
-    renderReadingModeUi();
-    renderAutoPageUi();
-    return;
-  }
-  state.settings.readingMode = nextMode;
-  syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
-  if (options.persist !== false) {
-    saveJSON(STORAGE_KEYS.settings, state.settings);
-  }
-  if (nextMode !== "paged") {
-    stopAutoPage();
-  }
-  if (state.book?.chapters?.length) {
-    state.scrollBaseChapter = clampChapterIndex(state.currentChapter);
-    state.renderedChapterCount = nextMode === "scroll" ? initialRenderedChapterCount() : 1;
-    renderReader({ preserveScroll: false });
-    if (nextMode === "paged") {
-      syncReaderState({ currentPageIndex: 0, totalPagesInChapter: getCurrentChapterPageCount() });
-      renderCurrentPage();
-    } else {
-      scrollToChapter(state.currentChapter, false);
-    }
-  }
-  renderReadingModeUi();
-  renderAutoPageUi();
-  if (options.announce !== false) {
-    setStatus(nextMode === "paged" ? "已切换到分页模式。" : "已切换到滚动模式。");
-  }
-}
-
-function renderReadingModeUi() {
-  const mode = normalizeReadingMode(state.settings.readingMode);
-  if (els.scrollModeBtn) {
-    const isScroll = mode === "scroll";
-    els.scrollModeBtn.classList.toggle("active", isScroll);
-    els.scrollModeBtn.setAttribute("aria-pressed", isScroll ? "true" : "false");
-  }
-  if (els.pagedModeBtn) {
-    const isPaged = mode === "paged";
-    els.pagedModeBtn.classList.toggle("active", isPaged);
-    els.pagedModeBtn.setAttribute("aria-pressed", isPaged ? "true" : "false");
-  }
-  if (els.pagedControls) {
-    els.pagedControls.hidden = mode !== "paged";
-  }
-}
-
-function adjustFontSize(delta) {
-  state.settings.fontSize = clampNumber((Number(state.settings.fontSize) || 21) + delta, 16, 32);
-  saveJSON(STORAGE_KEYS.settings, state.settings);
-  applySettings();
-}
-
-function adjustLineHeight(delta) {
-  const next = clampNumber((Number(state.settings.lineHeight) || 1.9) + delta, 1.4, 2.4);
-  state.settings.lineHeight = Math.round(next * 10) / 10;
-  saveJSON(STORAGE_KEYS.settings, state.settings);
-  applySettings();
-}
-
-function requestAnalyze(force = false) {
-  if (state.analysisTimerId) {
-    clearTimeout(state.analysisTimerId);
-    state.analysisTimerId = null;
-  }
-  const delayMs = force ? 20 : 180;
-  state.analysisTimerId = setTimeout(() => {
-    state.analysisTimerId = null;
-    void analyzeBookVocabulary(force);
-  }, delayMs);
+function normalizeTopWords(rawTopWords) {
+  if (!Array.isArray(rawTopWords)) return [];
+  return rawTopWords
+    .map((item) => {
+      const word = String(item?.word || item?.surface || item?.lemma || "").trim();
+      const lemma = String(item?.lemma || word).trim() || word;
+      const count = Number(item?.count || item?.freq || item?.occurrences || 0);
+      const level = normalizeJlptLevel(item?.level || item?.jlpt || "");
+      if (!word || !Number.isFinite(count) || count <= 0) return null;
+      return {
+        word,
+        lemma,
+        count,
+        level,
+        reading: normalizeReading(item?.reading || "", word) || "-",
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.count - a.count || jlptLevelRank(a.level) - jlptLevelRank(b.level) || a.word.localeCompare(b.word, "ja"));
 }
 
 async function analyzeBookVocabulary(force = false) {
@@ -1703,47 +953,165 @@ async function analyzeBookVocabulary(force = false) {
     return;
   }
 
+  const runId = Number(state.analysisRunId || 0) + 1;
+  state.analysisRunId = runId;
   state.analysisReady = false;
   renderHardWords();
   renderFrequencyStats();
 
   const hardWordsByChapter = new Map();
   const knownSet = new Set(getKnownWords().map((item) => normalizeWordKey(item)));
-  state.book.chapters.forEach((chapter) => {
-    const chapterHardWords = Array.isArray(chapter?.analysis?.difficultVocab)
+  const levelBuckets = { N1: 0, N2: 0, N3: 0, other: 0 };
+  const allTokenWordSet = new Set();
+  let totalTokens = 0;
+  const bookFreqMap = new Map();
+
+  for (let chapterIndex = 0; chapterIndex < state.book.chapters.length; chapterIndex += 1) {
+    if (state.analysisRunId !== runId) return;
+    const rawChapter = state.book.chapters[chapterIndex];
+    const { chapter, tokens } = await collectChapterTokensForAnalysis(rawChapter, chapterIndex);
+    if (state.analysisRunId !== runId) return;
+    if (!chapter) continue;
+    const canUsePrecomputedHardWords = chapterHasTrustedAnalysisTokens(chapter);
+
+    const chapterFreqMap = new Map();
+    totalTokens += tokens.length;
+    tokens.forEach((rawToken) => {
+      const token = resolveAnalysisLexeme(rawToken);
+      const lemmaOrSurface = normalizeWordKey(token.matchedLemma || token.lemma || token.surface);
+      if (lemmaOrSurface && JP_WORD_RE.test(lemmaOrSurface) && !isBoundary(lemmaOrSurface)) {
+        allTokenWordSet.add(lemmaOrSurface);
+      }
+      if (!isAnalyzableWord(token, lemmaOrSurface)) return;
+      const level = normalizeJlptLevel(
+        token.jlpt || getJlptLevel(token.surface, token.lemma, token.dictionaryForm)
+      );
+      if (level && Object.prototype.hasOwnProperty.call(levelBuckets, level)) {
+        levelBuckets[level] += 1;
+      } else {
+        levelBuckets.other += 1;
+      }
+
+      const word = stripWordNoise(token.matchedWord || token.surface) || lemmaOrSurface;
+      const reading = normalizeReading(token.reading || "", word) || "-";
+      const upsert = (target) => {
+        const current = target.get(lemmaOrSurface) || {
+          word: word || lemmaOrSurface,
+          lemma: lemmaOrSurface,
+          reading: reading || "-",
+          level,
+          count: 0,
+          meaning: "",
+        };
+        current.count += 1;
+        if (!current.word && word) current.word = word;
+        if (!current.reading || current.reading === "-") current.reading = reading || "-";
+        current.level = mergePreferredJlptLevel(current.level, level);
+        target.set(lemmaOrSurface, current);
+      };
+      upsert(chapterFreqMap);
+      upsert(bookFreqMap);
+    });
+
+    const chapterHardMap = new Map();
+    const precomputedHardWords = Array.isArray(chapter?.analysis?.difficultVocab)
       ? chapter.analysis.difficultVocab
       : [];
-    hardWordsByChapter.set(
-      chapter.id,
-      chapterHardWords
-        .filter((item) => !knownSet.has(normalizeWordKey(item?.lemma || item?.word)))
-        .map((item) => ({
+    if (canUsePrecomputedHardWords) {
+      precomputedHardWords.forEach((item) => {
+        const entry = buildHardWordOverviewEntry(item);
+        const key = normalizeWordKey(entry?.lemma || "");
+        if (!entry || !key || knownSet.has(key)) return;
+        chapterHardMap.set(key, entry);
+      });
+    }
+
+    chapterFreqMap.forEach((item, key) => {
+      const entry = buildHardWordOverviewEntry(item);
+      const entryKey = normalizeWordKey(entry?.lemma || key);
+      if (!entry || !entryKey || knownSet.has(entryKey)) return;
+      if (!chapterHardMap.has(entryKey)) {
+        chapterHardMap.set(entryKey, entry);
+        return;
+      }
+      const merged = chapterHardMap.get(entryKey);
+      merged.count = Math.max(Number(merged.count || 0), Number(entry.count || 0));
+      merged.level = mergePreferredJlptLevel(merged.level, entry.level);
+      if (!merged.reading || merged.reading === "-") merged.reading = entry.reading || "-";
+      if (!merged.word) merged.word = entry.word || entryKey;
+      if (!merged.lemma) merged.lemma = entry.lemma || entryKey;
+      if (!merged.meaning) merged.meaning = entry.meaning || "";
+      chapterHardMap.set(entryKey, merged);
+    });
+
+    const chapterHardWords = [...chapterHardMap.values()]
+      .sort(
+        (a, b) =>
+          jlptLevelRank(a.level) - jlptLevelRank(b.level) ||
+          Number(b.count || 0) - Number(a.count || 0) ||
+          String(a.word || a.lemma || "").localeCompare(String(b.word || b.lemma || ""), "ja")
+      )
+      .slice(0, 18)
+      .map((item) => {
+        const fallbackMeaning = lookupLocalDictionary(item.word || item.lemma, item.lemma || item.word);
+        const meaning =
+          String(item.meaning || "").trim() ||
+          (fallbackMeaning.source && fallbackMeaning.source !== "none" ? fallbackMeaning.meaning : "") ||
+          "点击查看释义";
+        return {
           word: String(item.word || item.lemma || ""),
+          lemma: String(item.lemma || item.word || ""),
           level: String(item.level || ""),
           count: Number(item.count || 0),
           reading: String(item.reading || "-"),
-          meaning: String(item.meaning || "点击查看释义"),
-        }))
-    );
-  });
+          meaning,
+        };
+      });
+    hardWordsByChapter.set(chapter.id, chapterHardWords);
+  }
 
   const sourceStats = state.book.stats && typeof state.book.stats === "object" ? state.book.stats : {};
   const levelBucketsSource =
     sourceStats.levelBuckets && typeof sourceStats.levelBuckets === "object"
       ? sourceStats.levelBuckets
       : {};
+  const sourceTopWords = normalizeTopWords(sourceStats.topWords || sourceStats.top_words);
 
+  const computedTopWords = [...bookFreqMap.values()]
+    .filter((item) => item && Number(item.count || 0) > 0)
+    .map((item) => ({
+      word: String(item.word || item.lemma || ""),
+      lemma: String(item.lemma || item.word || ""),
+      reading: String(item.reading || "-"),
+      level: String(item.level || ""),
+      count: Number(item.count || 0),
+    }))
+    .filter((item) => item.word)
+    .sort(
+      (a, b) =>
+        Number(b.count || 0) - Number(a.count || 0) ||
+        jlptLevelRank(a.level) - jlptLevelRank(b.level) ||
+        String(a.word || "").localeCompare(String(b.word || ""), "ja")
+    );
+
+  const hasComputedTokens = totalTokens > 0 || allTokenWordSet.size > 0;
+  const finalTopWords = computedTopWords.length ? computedTopWords : sourceTopWords;
+  const finalLevelBuckets = hasComputedTokens
+    ? levelBuckets
+    : {
+        N1: Number(levelBucketsSource.N1 || 0),
+        N2: Number(levelBucketsSource.N2 || 0),
+        N3: Number(levelBucketsSource.N3 || 0),
+        other: Number(levelBucketsSource.other || 0),
+      };
+
+  if (state.analysisRunId !== runId) return;
   state.hardWordsByChapter = hardWordsByChapter;
   state.bookFrequencyStats = {
-    totalTokens: Number(sourceStats.totalTokens || 0),
-    uniqueWords: Number(sourceStats.uniqueWords || 0),
-    topWords: Array.isArray(sourceStats.topWords) ? sourceStats.topWords : [],
-    levelBuckets: {
-      N1: Number(levelBucketsSource.N1 || 0),
-      N2: Number(levelBucketsSource.N2 || 0),
-      N3: Number(levelBucketsSource.N3 || 0),
-      other: Number(levelBucketsSource.other || 0),
-    },
+    totalTokens: hasComputedTokens ? Number(totalTokens || 0) : Number(sourceStats.totalTokens || 0),
+    uniqueWords: hasComputedTokens ? Number(allTokenWordSet.size || 0) : Number(sourceStats.uniqueWords || 0),
+    topWords: finalTopWords,
+    levelBuckets: finalLevelBuckets,
   };
   state.analysisReady = true;
   state.difficultyRangesCache.clear();
@@ -1798,6 +1166,7 @@ function renderHardWords() {
     const button = document.createElement("button");
     button.className = "tiny-btn";
     button.dataset.hardWord = item.word;
+    button.dataset.hardLemma = item.lemma || item.word;
     button.dataset.level = item.level;
     button.textContent = "查看释义";
 
@@ -1857,38 +1226,47 @@ function onHardWordListClick(event) {
   const button = event.target.closest("[data-hard-word]");
   if (!button) return;
   const word = String(button.dataset.hardWord || "").trim();
+  const lemma = String(button.dataset.hardLemma || word).trim() || word;
   const level = String(button.dataset.level || "").trim();
   if (!word) return;
-  inspectWordFromList(word, level);
+  inspectWordFromList(word, lemma, level);
 }
 
-function inspectWordFromList(word, level = "") {
-  const local = lookupLocalDictionary(word, word);
+function inspectWordFromList(word, lemma = word, level = "") {
+  const local = lookupLocalDictionary(word, lemma);
   const chapter = currentChapterData();
-  const hit = chapter ? findWordInChapter(chapter, word) : null;
+  const hit = chapter ? findWordInChapter(chapter, word, lemma) : null;
   const example = hit
     ? extractSentenceExample(chapter.paragraphs[hit.paraIndex], hit.start, hit.end)
     : "未提取到例句";
-  state.selected = {
-    word,
-    lemma: word,
-    reading: local.reading || "-",
-    pos: "难词速览",
-    meaning: local.meaning,
-    example,
-    jlpt: level || getJlptLevel(word, word),
-  };
+  const selectedWord = String(local.matchedWord || word).trim() || word;
+  const selectedLemma = String(local.matchedLemma || lemma || selectedWord).trim() || selectedWord;
+  setSelectionState({
+    selected: {
+      word: selectedWord,
+      lemma: selectedLemma,
+      matchedWord: selectedWord,
+      matchedLemma: selectedLemma,
+      reading: local.reading || "-",
+      pos: "难词速览",
+      meaning: local.meaning,
+      example,
+      jlpt: level || getJlptLevel(word, lemma),
+    },
+  });
   renderLookupPanel();
 
   if (!chapter) return;
   if (!hit) return;
   clearSelectionMark();
-  state.selectedRange = {
-    chapterId: chapter.id,
-    paraIndex: hit.paraIndex,
-    start: hit.start,
-    end: hit.end,
-  };
+  setSelectionState({
+    selectedRange: {
+      chapterId: chapter.id,
+      paraIndex: hit.paraIndex,
+      start: hit.start,
+      end: hit.end,
+    },
+  });
   markSelection();
   const para = els.readerContent.querySelector(
     `.reader-para[data-chapter-id="${chapter.id}"][data-pindex="${hit.paraIndex}"]`
@@ -1898,11 +1276,13 @@ function inspectWordFromList(word, level = "") {
   }
 }
 
-function findWordInChapter(chapter, word) {
+function findWordInChapter(chapter, ...words) {
+  const candidates = [...new Set(words.map((item) => String(item || "").trim()).filter(Boolean))];
   for (let i = 0; i < chapter.paragraphs.length; i += 1) {
     const paragraph = chapter.paragraphs[i];
-    const start = paragraph.indexOf(word);
-    if (start >= 0) {
+    for (const word of candidates) {
+      const start = paragraph.indexOf(word);
+      if (start < 0) continue;
       return { paraIndex: i, start, end: start + word.length };
     }
   }
@@ -1970,14 +1350,95 @@ function normalizeWordKey(value) {
   return String(value || "").trim();
 }
 
+function hasLexicalJapaneseChar(word) {
+  return /[\u3400-\u9fff々ァ-ヺー]/u.test(String(word || ""));
+}
+
 function isAnalyzableWord(token, word) {
   if (!word) return false;
   if (isBoundary(word)) return false;
   if (!JP_WORD_RE.test(word)) return false;
-  if (word.length <= 1) return false;
+  if (word.length <= 1 && !hasLexicalJapaneseChar(word)) return false;
   if (HIRAGANA_ONLY_RE.test(word)) return false;
   if (token?.pos && BLOCKED_POS_RE.test(String(token.pos))) return false;
   return true;
+}
+
+function shouldIncludeHardWordLevel(level) {
+  return HARD_WORD_LEVELS.includes(level);
+}
+
+function chapterHasTrustedAnalysisTokens(chapter) {
+  const tokens = Array.isArray(chapter?.analysis?.tokens)
+    ? chapter.analysis.tokens.map(normalizeToken).filter((token) => token.surface)
+    : [];
+  return shouldTrustAnalysisTokens(tokens);
+}
+
+function buildHardWordOverviewEntry(item = {}) {
+  const level = normalizeJlptLevel(item.level || item.jlpt || "");
+  if (!shouldIncludeHardWordLevel(level)) return null;
+
+  const rawWord = String(item.word || item.surface || item.lemma || "").trim();
+  const rawLemma = String(item.lemma || item.word || item.surface || "").trim();
+  const word = stripWordNoise(rawLemma || rawWord);
+  const lemma = normalizeWordKey(word || stripWordNoise(rawWord));
+  if (!lemma || !isAnalyzableWord({ pos: item.pos || "" }, lemma)) return null;
+
+  if (
+    isSuspiciousGluedLexicalToken({
+      surface: rawWord || rawLemma || lemma,
+      lemma,
+      dictionaryForm: lemma,
+      pos: item.pos || "",
+    })
+  ) {
+    return null;
+  }
+
+  return {
+    word: word || lemma,
+    lemma,
+    level,
+    count: Number(item.count || 0),
+    reading: normalizeReading(item.reading || "", word || lemma) || "-",
+    meaning: String(item.meaning || "").trim(),
+  };
+}
+
+function resolveAnalysisLexeme(token) {
+  const normalized = normalizeToken(token);
+  const jlptMatch = findJlptMatch({
+    surface: normalized.surface,
+    lemma: normalized.lemma,
+    dictionaryForm: normalized.dictionaryForm,
+    jlptMap: state.jlptMap,
+  });
+  const fallbackWord =
+    stripWordNoise(normalized.dictionaryForm || normalized.lemma || normalized.surface) ||
+    stripWordNoise(normalized.surface) ||
+    normalized.surface;
+  const matchedWord = String(jlptMatch.matchedWord || fallbackWord).trim() || fallbackWord;
+  const matchedLemma =
+    String(
+      stripWordNoise(
+        jlptMatch.matchedLemma ||
+          (normalized.dictionaryForm && normalized.dictionaryForm !== normalized.surface
+            ? normalized.dictionaryForm
+            : "") ||
+          (normalized.lemma && normalized.lemma !== normalized.surface ? normalized.lemma : "") ||
+          matchedWord
+      ) || matchedWord
+    ).trim() || matchedWord;
+  const alignedRange = alignMatchedWordToToken(normalized, matchedWord);
+  return {
+    ...normalized,
+    matchedWord,
+    matchedLemma,
+    jlpt: normalizeJlptLevel(normalized.jlpt || jlptMatch.level),
+    start: alignedRange.start,
+    end: alignedRange.end,
+  };
 }
 
 function scheduleDifficultyPaint(force = false) {
@@ -2013,16 +1474,21 @@ async function ensureDifficultyRanges(chapterId, paraIndex, paragraph, force = f
 
 function buildDifficultyRanges(tokens) {
   return tokens
-    .map((token) => {
-      const word = normalizeWordKey(token.lemma || token.surface);
+    .map((rawToken) => {
+      const token = resolveAnalysisLexeme(rawToken);
+      const word = normalizeWordKey(token.matchedLemma || token.lemma || token.surface);
       if (!isAnalyzableWord(token, word)) return null;
+      const level = normalizeJlptLevel(
+        token.jlpt || getJlptLevel(token.surface, token.lemma, token.dictionaryForm)
+      );
+      if (!HIGHLIGHT_LEVELS.includes(level)) return null;
       return {
         start: token.start,
         end: token.end,
-        level: String(token.jlpt || getJlptLevel(token.surface, token.lemma) || ""),
+        level,
       };
     })
-    .filter((item) => item && HIGHLIGHT_LEVELS.includes(item.level));
+    .filter(Boolean);
 }
 
 function applyDifficultyToDom(chapterId, paraIndex, ranges) {
@@ -2074,7 +1540,7 @@ function applyVisibleDifficultyToDom() {
 }
 
 function shouldHighlightLevel(level) {
-  const mode = state.settings.difficultyMode || "n1n2n3";
+  const mode = state.settingsStore?.difficultyMode || state.settings.difficultyMode || "n1n2n3";
   if (mode === "off") return false;
   if (mode === "n1") return level === "N1";
   if (mode === "n1n2") return level === "N1" || level === "N2";
@@ -2116,1309 +1582,7 @@ function getKnownWords() {
   return [...out];
 }
 
-function getNoteRanges(chapterId, paraIndex) {
-  return state.notes
-    .filter((note) => note.chapterId === chapterId && note.paraIndex === paraIndex)
-    .map((note) => ({ start: note.start, end: note.end, word: note.word }));
-}
-
-function findRangeHit(ranges, index) {
-  return ranges.find((item) => index >= item.start && index < item.end);
-}
-
-async function onReaderClick(event) {
-  const target = event.target.closest(".jp-char");
-  if (!target) return;
-  const selection = window.getSelection ? window.getSelection() : null;
-  if (selection && !selection.isCollapsed) return;
-  const para = target.closest(".reader-para");
-  if (!para) return;
-  const chapterIndex = Number(para.dataset.chapter);
-  if (!Number.isFinite(chapterIndex)) return;
-  const chapter = state.book?.chapters?.[chapterIndex];
-  if (!chapter) return;
-  const chapterId = para.dataset.chapterId || chapter.id;
-  const paraIndex = Number(para.dataset.pindex);
-  const charIndex = Number(target.dataset.index);
-  state.lastCursor = { chapterId, chapterIndex, paraIndex, charIndex };
-  void syncReadingProgress(state.lastCursor);
-  if (state.currentChapter !== chapterIndex) {
-    state.currentChapter = chapterIndex;
-    syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
-    persistCurrentChapterState();
-    renderBookMeta();
-    renderChapterList();
-    renderHardWords();
-    scheduleDifficultyPaint();
-  }
-  const paragraph = chapter.paragraphs[paraIndex] || "";
-  const token = await findTokenAt(chapterId, paraIndex, paragraph, charIndex, para);
-  const isDifficultyWordChar =
-    target.classList.contains("jlpt-n1") ||
-    target.classList.contains("jlpt-n2") ||
-    target.classList.contains("jlpt-n3");
-  if (token && isDifficultyWordChar) {
-    await selectToken(token, chapterId, chapterIndex, paraIndex);
-    return;
-  }
-  const sentence = findSentenceAt(chapterId, paraIndex, charIndex);
-  if (!sentence) return;
-  await explainSentence(sentence, {
-    chapterId,
-    chapterIndex,
-    paraIndex,
-    bookId: state.book?.id || "",
-    chapterTitle: chapter.title,
-    paragraph,
-  });
-}
-
-function onReaderMouseUp() {
-  window.setTimeout(() => {
-    void handleReaderSelectionLookup();
-  }, 0);
-}
-
-function onReaderTouchEnd() {
-  window.setTimeout(() => {
-    void handleReaderSelectionLookup();
-  }, 80);
-}
-
-async function handleReaderSelectionLookup() {
-  const selection = window.getSelection ? window.getSelection() : null;
-  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
-  const range = selection.getRangeAt(0);
-  const para = getSelectionParagraph(range);
-  if (!els.readerContent.contains(para)) return;
-
-  const chapterIndex = Number(para.dataset.chapter);
-  const chapter = state.book?.chapters?.[chapterIndex];
-  if (!chapter) return;
-  const chapterId = para.dataset.chapterId || chapter.id;
-  const paraIndex = Number(para.dataset.pindex);
-  const paragraph = chapter.paragraphs[paraIndex] || "";
-  const selected = getSelectedRangeInParagraph(range, para, paragraph);
-  if (!selected) return;
-  if (!JP_WORD_RE.test(selected.surface)) return;
-  const selectionKey = `${chapterId}:${paraIndex}:${selected.start}:${selected.end}`;
-  const now = Date.now();
-  if (
-    selectionKey === state.lastSelectionLookupKey &&
-    now - Number(state.lastSelectionLookupAt || 0) < 360
-  ) {
-    return;
-  }
-  state.lastSelectionLookupKey = selectionKey;
-  state.lastSelectionLookupAt = now;
-
-  selection.removeAllRanges();
-  state.lastCursor = {
-    chapterId,
-    chapterIndex,
-    paraIndex,
-    charIndex: selected.start,
-  };
-  if (state.currentChapter !== chapterIndex) {
-    state.currentChapter = chapterIndex;
-    syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
-    persistCurrentChapterState();
-    renderBookMeta();
-    renderChapterList();
-    renderHardWords();
-    scheduleDifficultyPaint();
-  }
-  await selectToken(
-    {
-      surface: selected.surface,
-      lemma: selected.surface,
-      reading: normalizeReading("", selected.surface),
-      pos: "",
-      start: selected.start,
-      end: selected.end,
-    },
-    chapterId,
-    chapterIndex,
-    paraIndex
-  );
-}
-
-function getSelectionParagraph(range) {
-  const probeNodes = [range.commonAncestorContainer, range.startContainer, range.endContainer];
-  for (const node of probeNodes) {
-    if (!node) continue;
-    const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
-    if (!el || typeof el.closest !== "function") continue;
-    const para = el.closest(".reader-para");
-    if (para) return para;
-  }
-  return null;
-}
-
-function getSelectedRangeInParagraph(range, paraEl, paragraph) {
-  const chars = paraEl.querySelectorAll(".jp-char");
-  let start = Number.POSITIVE_INFINITY;
-  let end = -1;
-  chars.forEach((charEl, index) => {
-    try {
-      if (!range.intersectsNode(charEl)) return;
-    } catch {
-      return;
-    }
-    if (index < start) start = index;
-    if (index > end) end = index;
-  });
-  if (!Number.isFinite(start) || end < start) return null;
-  const safeStart = clampNumber(start, 0, Math.max(0, paragraph.length - 1));
-  const safeEnd = clampNumber(end + 1, safeStart + 1, paragraph.length);
-  const surface = paragraph.slice(safeStart, safeEnd);
-  if (!surface.trim()) return null;
-  return { start: safeStart, end: safeEnd, surface };
-}
-
-async function findTokenAt(chapterId, paraIndex, paragraph, charIndex, paraEl) {
-  const tokens = await getParagraphTokens(chapterId, paraIndex, paragraph);
-  const token = tokens.find((item) => charIndex >= item.start && charIndex < item.end);
-  if (token) return token;
-
-  const knownWordRaw = paraEl.querySelector(`.jp-char[data-index="${charIndex}"]`)?.dataset.knownWord;
-  const knownWord = normalizeKnownWordCandidate(knownWordRaw);
-  if (knownWord) {
-    const expanded = expandKnownRange(paraEl, charIndex, knownWord);
-    const cappedEnd = Math.min(expanded.end, expanded.start + knownWord.length);
-    return {
-      surface: knownWord,
-      lemma: knownWord,
-      reading: normalizeReading("", knownWord),
-      pos: "known",
-      start: expanded.start,
-      end: cappedEnd,
-    };
-  }
-
-  const ch = paragraph[charIndex];
-  if (!ch || isBoundary(ch)) return null;
-  return {
-    surface: ch,
-    lemma: ch,
-    reading: normalizeReading("", ch),
-    pos: "fallback",
-    start: charIndex,
-    end: charIndex + 1,
-  };
-}
-
-async function getParagraphTokens(chapterId, paraIndex, paragraph) {
-  const key = `${chapterId}:${paraIndex}`;
-  const chapter = getChapterById(chapterId);
-  const analysisTokens = Array.isArray(chapter?.analysis?.tokens)
-    ? chapter.analysis.tokens
-        .filter((token) => Number(token?.paragraphIndex) === Number(paraIndex))
-        .map(normalizeToken)
-    : [];
-  if (analysisTokens.length) {
-    state.paragraphTokensCache.set(key, analysisTokens);
-    return analysisTokens;
-  }
-  if (state.paragraphTokensCache.has(key)) {
-    const cached = state.paragraphTokensCache.get(key);
-    const cachedAllFallback =
-      Array.isArray(cached) &&
-      cached.length > 0 &&
-      cached.every((token) => String(token?.pos || "") === "fallback");
-    if (!cachedAllFallback) return cached;
-    if (!state.apiOnline) {
-      await ensureApiHealthFresh();
-    }
-    if (!state.apiOnline) return cached;
-    state.paragraphTokensCache.delete(key);
-  }
-  const tokens = await tokenizeParagraph(paragraph);
-  state.paragraphTokensCache.set(key, tokens);
-  return tokens;
-}
-
-async function tokenizeParagraph(text) {
-  if (!state.apiOnline) {
-    await ensureApiHealthFresh();
-  }
-  if (state.apiOnline) {
-    try {
-      const payload = await fetchJson("/api/nlp/tokenize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-      if (payload.ok && Array.isArray(payload.tokens)) {
-        state.tokenizerBackend = payload.backend || state.tokenizerBackend;
-        renderApiStatus();
-        return payload.tokens.map(normalizeToken);
-      }
-    } catch {
-      state.apiOnline = false;
-      renderApiStatus();
-    }
-  }
-  return fallbackTokenize(text);
-}
-
-function katakanaToHiragana(text) {
-  return String(text || "").replace(/[ァ-ヶ]/g, (ch) =>
-    String.fromCharCode(ch.charCodeAt(0) - 0x60)
-  );
-}
-
-function hiraganaToKatakana(text) {
-  return String(text || "").replace(/[ぁ-ゖ]/g, (ch) =>
-    String.fromCharCode(ch.charCodeAt(0) + 0x60)
-  );
-}
-
-function fallbackReadingFromSurface(surface) {
-  const value = String(surface || "").trim();
-  if (!value) return "";
-  if (/^[ぁ-ゖー]+$/.test(value)) return value;
-  if (/^[ァ-ヺー]+$/.test(value)) return katakanaToHiragana(value);
-  return "";
-}
-
-function normalizeReading(reading, surface = "") {
-  const raw = String(reading || "").trim() || fallbackReadingFromSurface(surface);
-  if (!raw) return "";
-  if (/^[ァ-ヺー]+$/.test(raw)) return katakanaToHiragana(raw);
-  return raw;
-}
-
-function hasCjkText(text) {
-  return /[\u3400-\u9fff]/.test(String(text || ""));
-}
-
-function normalizeToken(token) {
-  const start = Number(token.start);
-  const end = Number(token.end);
-  const surface = String(token.surface || "");
-  return {
-    paragraphIndex: Number.isFinite(Number(token.paragraphIndex)) ? Number(token.paragraphIndex) : 0,
-    surface,
-    lemma: String(token.lemma || surface),
-    reading: normalizeReading(token.reading, surface),
-    pos: String(token.pos || ""),
-    jlpt: String(token.jlpt || ""),
-    start: Number.isFinite(start) ? start : 0,
-    end: Number.isFinite(end) ? end : surface.length,
-  };
-}
-
-function fallbackTokenize(text) {
-  const pattern = /[一-龯々]+[ぁ-ゖー]*|[ァ-ヺー]+|[ぁ-ゖー]+|[A-Za-z0-9]+|[^\s]/g;
-  const tokens = [];
-  let match;
-  while ((match = pattern.exec(text))) {
-    const surface = match[0];
-    tokens.push({
-      surface,
-      lemma: surface,
-      reading: "",
-      pos: "fallback",
-      start: match.index,
-      end: match.index + surface.length,
-    });
-  }
-  return tokens;
-}
-
-function expandKnownRange(paragraphEl, index, word) {
-  const chars = paragraphEl.querySelectorAll(".jp-char");
-  let start = index;
-  let end = index + 1;
-  while (start > 0 && chars[start - 1].dataset.knownWord === word) start -= 1;
-  while (end < chars.length && chars[end].dataset.knownWord === word) end += 1;
-  return { start, end };
-}
-
-function getParagraphByLocation(chapterId, chapterIndex, paraIndex) {
-  const chapter =
-    getChapterById(chapterId) ||
-    (state.book?.chapters?.[clampChapterIndex(Number(chapterIndex) || 0)] ?? null);
-  if (!chapter || !Array.isArray(chapter.paragraphs)) return "";
-  return String(chapter.paragraphs[Number(paraIndex)] || "");
-}
-
-function extractSentenceExample(paragraph, start, end) {
-  const text = String(paragraph || "");
-  if (!text) return "";
-  const safeStart = clampNumber(Number(start) || 0, 0, Math.max(0, text.length - 1));
-  const safeEnd = clampNumber(Number(end) || safeStart + 1, safeStart + 1, text.length);
-  const sentenceDelim = /[。！？!?]/;
-
-  let left = 0;
-  for (let i = safeStart - 1; i >= 0; i -= 1) {
-    if (sentenceDelim.test(text[i])) {
-      left = i + 1;
-      break;
-    }
-  }
-  let right = text.length;
-  for (let i = safeEnd; i < text.length; i += 1) {
-    if (sentenceDelim.test(text[i])) {
-      right = i + 1;
-      break;
-    }
-  }
-
-  let sentence = text.slice(left, right).trim();
-  if (!sentence) return "";
-  if (sentence.length <= 110) return sentence;
-
-  const localStart = safeStart - left;
-  const localEnd = safeEnd - left;
-  const clipStart = clampNumber(localStart - 24, 0, Math.max(0, sentence.length - 2));
-  const clipEnd = clampNumber(localEnd + 32, clipStart + 1, sentence.length);
-  const clipped = sentence.slice(clipStart, clipEnd).trim();
-  if (!clipped) return sentence.slice(0, 110).trim();
-  const prefix = clipStart > 0 ? "…" : "";
-  const suffix = clipEnd < sentence.length ? "…" : "";
-  return `${prefix}${clipped}${suffix}`;
-}
-
-async function selectToken(token, chapterId, chapterIndex, paraIndex) {
-  clearSelectionMark();
-  state.selectedRange = {
-    chapterId,
-    paraIndex,
-    start: token.start,
-    end: token.end,
-  };
-  state.currentChapter = clampChapterIndex(chapterIndex);
-  syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
-  persistCurrentChapterState();
-  renderBookMeta();
-  renderChapterList();
-  markSelection();
-  void syncReadingProgress({
-    chapterId,
-    chapterIndex,
-    paraIndex,
-    charIndex: token.start,
-  });
-
-  const paragraph = getParagraphByLocation(chapterId, chapterIndex, paraIndex);
-  const normalizedToken = normalizeToken(token);
-  const resolvedToken = await enrichTokenDetails(normalizedToken);
-  const contextExample = extractSentenceExample(paragraph, resolvedToken.start, resolvedToken.end);
-  const entries = await lookupDictionary(resolvedToken.surface, resolvedToken.lemma);
-  const dict = buildDictionaryView(resolvedToken, entries, contextExample);
-  dict.jlpt = getJlptLevel(resolvedToken.surface, resolvedToken.lemma);
-  state.selected = dict;
-  state.stats.lookupCount += 1;
-  saveJSON(STORAGE_KEYS.stats, state.stats);
-  renderLookupPanel();
-  renderStats();
-  void trackEvent("word_clicked", {
-    word: dict.word,
-    lemma: dict.lemma,
-    chapterId,
-    paraIndex,
-  });
-}
-
-async function enrichTokenDetails(token) {
-  const pos = String(token?.pos || "").trim();
-  const reading = String(token?.reading || "").trim();
-  const needsUpgrade = pos === "fallback" || !reading;
-  if (!needsUpgrade) return token;
-
-  await ensureApiHealthFresh(0);
-  if (!state.apiOnline) return token;
-
-  try {
-    const payload = await fetchJson("/api/nlp/tokenize", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: token.surface }),
-    });
-    if (!payload.ok || !Array.isArray(payload.tokens) || !payload.tokens.length) return token;
-    const exact = payload.tokens
-      .map(normalizeToken)
-      .find((item) => item.surface === token.surface);
-    if (!exact) return token;
-    return {
-      ...token,
-      lemma: String(exact.lemma || token.lemma || token.surface),
-      reading: normalizeReading(exact.reading || token.reading || "", token.surface),
-      pos: String(exact.pos || token.pos || ""),
-    };
-  } catch {
-    return token;
-  }
-}
-
-async function lookupDictionary(surface, lemma) {
-  if (!state.apiOnline) {
-    await ensureApiHealthFresh();
-  }
-  if (state.apiOnline) {
-    try {
-      const payload = await fetchJson("/api/dict/lookup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ surface, lemma }),
-      });
-      if (payload.ok && Array.isArray(payload.entries)) {
-        return payload.entries;
-      }
-    } catch {
-      state.apiOnline = false;
-      renderApiStatus();
-    }
-  }
-  return [];
-}
-
-function buildDictionaryView(token, entries, contextExample = "") {
-  if (entries.length) {
-    const first = entries[0];
-    const tokenPos = String(token.pos || "").trim();
-    const preferTokenPos = tokenPos && tokenPos !== "fallback" && tokenPos !== "known";
-    const gloss = entries
-      .map((item) => item.gloss_zh || item.glossZh || item.gloss || item.gloss_en || item.glossEn)
-      .filter(Boolean)
-      .slice(0, 3)
-      .join(" / ");
-    const meaning = gloss ? (hasCjkText(gloss) ? gloss : `英释: ${gloss}`) : "词典无释义";
-    const example = String(
-      first.example ||
-        first.example_ja ||
-        first.sentence ||
-        first.sample ||
-        contextExample ||
-        ""
-    ).trim();
-    return {
-      word: token.surface,
-      lemma: first.lemma || token.lemma || token.surface,
-      reading: normalizeReading(token.reading || first.reading || "", token.surface) || "-",
-      pos: preferTokenPos ? tokenPos : String(first.pos || tokenPos || "-"),
-      meaning,
-      example: example || "未提取到例句",
-    };
-  }
-  const local = lookupLocalDictionary(token.surface, token.lemma);
-  const tokenPos = String(token.pos || "").trim();
-  return {
-    word: token.surface,
-    lemma: token.lemma || token.surface,
-    reading: normalizeReading(token.reading || local.reading || "", token.surface) || "-",
-    pos: tokenPos && tokenPos !== "fallback" ? tokenPos : "-",
-    meaning: local.meaning,
-    example: contextExample || "未提取到例句",
-  };
-}
-
-function stripWordNoise(value) {
-  return String(value || "")
-    .trim()
-    .replace(
-      /^[\s「」『』【】［］（）()〈〉《》〔〕｛｝{}'"“”‘’、。・，．！？!?：:；;]+|[\s「」『』【】［］（）()〈〉《》〔〕｛｝{}'"“”‘’、。・，．！？!?：:；;]+$/g,
-      ""
-    )
-    .trim();
-}
-
-function buildLookupCandidates(surface, lemma) {
-  const candidates = new Set();
-  const seed = [surface, lemma];
-  seed.forEach((raw) => {
-    const value = String(raw || "").trim();
-    if (!value) return;
-    candidates.add(value);
-    const stripped = stripWordNoise(value);
-    if (stripped) candidates.add(stripped);
-    const hira = katakanaToHiragana(stripped || value);
-    if (hira) candidates.add(hira);
-    const kata = hiraganaToKatakana(stripped || value);
-    if (kata) candidates.add(kata);
-  });
-  return [...candidates];
-}
-
-function lookupLocalDictionary(surface, lemma) {
-  const candidates = buildLookupCandidates(surface, lemma);
-  for (const key of candidates) {
-    if (MINI_DICT[key]) {
-      return {
-        reading: normalizeReading(MINI_DICT[key].reading || "", key) || "-",
-        meaning: MINI_DICT[key].meaning || "词典无释义",
-      };
-    }
-    const fromVocab = state.vocab.find((item) => {
-      const word = stripWordNoise(item.word);
-      const itemLemma = stripWordNoise(item.lemma);
-      return word === key || itemLemma === key;
-    });
-    if (fromVocab) {
-      return {
-        reading: normalizeReading(fromVocab.reading || "", key) || "-",
-        meaning: fromVocab.meaning || "词典无释义",
-      };
-    }
-  }
-  const missingHint =
-    state.apiOnline && !state.jmdictReady
-      ? "未加载 jmdict.db，本地词库命中有限。可先构建词典库或点外部词典。"
-      : "本地词库未命中。可点“在 MOJi 中查”继续检索。";
-  return {
-    reading: normalizeReading("", surface || lemma) || "-",
-    meaning: missingHint,
-  };
-}
-
-function normalizeMojiScheme(value) {
-  return value === "en" ? "en" : "jp";
-}
-
-function normalizeReaderFont(value) {
-  const key = String(value || "").trim();
-  return READER_FONT_MAP[key] ? key : "mincho";
-}
-
-function normalizeRightPanelTab(value) {
-  const key = String(value || "").trim();
-  if (key === "lookup") return "vocab";
-  if (["stats", "tts", "settings", "data", "billing"].includes(key)) return "more";
-  return RIGHT_PANEL_TABS.includes(key) ? key : "vocab";
-}
-
-function isMacDesktop() {
-  return /Mac/i.test(navigator.platform || "");
-}
-
-function getMacDictUrl(word) {
-  const query = String(word || "").trim();
-  return query ? `${MAC_DICT_SCHEME}${encodeURIComponent(query)}` : "";
-}
-
-function getMojiLinks(word) {
-  const scheme = normalizeMojiScheme(state.settings.mojiScheme);
-  const query = String(word || "").trim();
-  const encoded = encodeURIComponent(query);
-  return {
-    appUrl: query ? `${MOJI_SCHEME_MAP[scheme]}${encoded}` : "",
-    webUrl: query ? `${MOJI_WEB_SEARCH}${encoded}` : MOJI_WEB_HOME,
-    label: scheme === "en" ? "在 MOJi（英版）中查" : "在 MOJi（日版）中查",
-  };
-}
-
-function isIosLikeDevice() {
-  const ua = navigator.userAgent || "";
-  const isClassicIOS = /iPad|iPhone|iPod/i.test(ua);
-  const isIpadDesktopMode =
-    navigator.platform === "MacIntel" && Number(navigator.maxTouchPoints || 0) > 1;
-  return isClassicIOS || isIpadDesktopMode;
-}
-
-function syncDictLink(word) {
-  const links = getMojiLinks(word);
-  els.dictLink.href = links.webUrl;
-  els.dictLink.dataset.appUrl = links.appUrl;
-  els.dictLink.dataset.webUrl = links.webUrl;
-  els.dictLink.textContent = links.label;
-  if (els.macDictLink) {
-    const macUrl = getMacDictUrl(word);
-    els.macDictLink.hidden = !isMacDesktop();
-    els.macDictLink.href = macUrl || "#";
-    els.macDictLink.classList.toggle("disabled-link", !macUrl);
-  }
-}
-
-function onDictLinkClick(event) {
-  const appUrl = String(els.dictLink.dataset.appUrl || "").trim();
-  const webUrl = String(els.dictLink.dataset.webUrl || els.dictLink.href || MOJI_WEB_HOME).trim();
-  if (!appUrl || !isIosLikeDevice()) return;
-
-  event.preventDefault();
-  const timerId = window.setTimeout(() => {
-    if (!document.hidden) window.location.href = webUrl;
-  }, 900);
-
-  const clearFallback = () => window.clearTimeout(timerId);
-  window.addEventListener("pagehide", clearFallback, { once: true });
-  document.addEventListener("visibilitychange", clearFallback, { once: true });
-  window.location.href = appUrl;
-}
-
-function renderLookupPanel() {
-  if (!state.selected) {
-    els.selectedWord.textContent = "未选中";
-    els.selectedLemma.textContent = "原形: -";
-    els.selectedReading.textContent = "读音: -";
-    els.selectedPos.textContent = "词性: -";
-    els.selectedMeaning.textContent =
-      "在阅读区拖选要查询的文字，或直接点击已标注的 N1/N2/N3 词。";
-    els.selectedExample.textContent = "例句: -";
-    els.noteEditorTarget.textContent = "未选中词";
-    syncDictLink("");
-    return;
-  }
-  els.selectedWord.textContent = state.selected.word;
-  els.selectedLemma.textContent = `原形: ${state.selected.lemma || "-"}`;
-  els.selectedReading.textContent = `读音: ${state.selected.reading || "-"}`;
-  const jlptText = state.selected.jlpt ? ` · ${state.selected.jlpt}` : "";
-  els.selectedPos.textContent = `词性: ${state.selected.pos || "-"}${jlptText}`;
-  els.selectedMeaning.textContent = state.selected.meaning;
-  els.selectedExample.textContent = `例句: ${state.selected.example || "-"}`;
-  els.noteEditorTarget.textContent = `当前词: ${state.selected.word}`;
-  syncDictLink(state.selected.lemma || state.selected.word);
-}
-
-function renderExplainPanel() {
-  if (!els.explainStatus) return;
-  const explain = state.explain || {};
-  if (els.explainQuota) {
-    const remaining = Number(state.billing.aiExplainRemainingToday);
-    const limit = Number(state.billing.features?.aiExplainDailyLimit);
-    const isUnlimited = limit < 0 || remaining < 0;
-    const prefix = state.sync.accountMode === "registered" ? "账号" : "游客";
-    els.explainQuota.textContent = isUnlimited
-      ? `${prefix} AI 解释配额：不限量`
-      : `${prefix} AI 解释剩余：${remaining} / ${limit}`;
-  }
-  if (explain.loading) {
-    els.explainStatus.textContent = "AI 正在解释句子...";
-    els.explainTranslation.textContent = "";
-    els.explainGrammar.innerHTML = "";
-    els.explainNotes.innerHTML = "";
-    els.explainDifficulty.textContent = "";
-    return;
-  }
-  if (explain.error) {
-    els.explainStatus.textContent = explain.error;
-    els.explainTranslation.textContent = "";
-    els.explainGrammar.innerHTML = "";
-    els.explainNotes.innerHTML = "";
-    els.explainDifficulty.textContent = "";
-    return;
-  }
-  if (!explain.result) {
-    els.explainStatus.textContent = "点击阅读区中的句子查看 AI 解释。";
-    els.explainTranslation.textContent = "";
-    els.explainGrammar.innerHTML = "";
-    els.explainNotes.innerHTML = "";
-    els.explainDifficulty.textContent = "";
-    return;
-  }
-  els.explainStatus.textContent = explain.cached ? "AI 解释已加载（命中缓存）" : "AI 解释已加载";
-  els.explainTranslation.textContent = `翻译：${explain.result.translation || "-"}`;
-  renderExplainList(els.explainGrammar, explain.result.grammar || [], "语法");
-  renderExplainList(els.explainNotes, explain.result.notes || [], "说明");
-  els.explainDifficulty.textContent = `难度：${explain.result.difficulty || "-"}`;
-}
-
-function renderExplainList(listEl, items, label) {
-  listEl.innerHTML = "";
-  if (!Array.isArray(items) || !items.length) {
-    const li = document.createElement("li");
-    li.textContent = `${label}：-`;
-    listEl.appendChild(li);
-    return;
-  }
-  items.forEach((item, index) => {
-    const li = document.createElement("li");
-    li.textContent = `${label} ${index + 1}：${item}`;
-    listEl.appendChild(li);
-  });
-}
-
-function buildExplainContext(paragraph, sentence) {
-  const text = String(paragraph || "");
-  const start = Math.max(0, Number(sentence?.start || 0) - 24);
-  const end = Math.min(text.length, Number(sentence?.end || 0) + 24);
-  return text.slice(start, end);
-}
-
-async function explainSentence(sentence, meta = {}) {
-  const text = String(sentence?.text || "").trim();
-  if (!text) return;
-  state.selectedSentence = {
-    id: String(sentence.id || ""),
-    text,
-    chapterId: String(meta.chapterId || ""),
-    paraIndex: Number(meta.paraIndex || 0),
-    start: Number(sentence.start || 0),
-    end: Number(sentence.end || 0),
-  };
-  state.explain = {
-    loading: true,
-    sentenceId: String(sentence.id || ""),
-    cached: false,
-    result: null,
-    error: "",
-  };
-  renderReader({ preserveScroll: true });
-  renderExplainPanel();
-
-  try {
-    const payload = await fetchJson(
-      "/api/ai/explain",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: state.sync.userId,
-          bookId: String(meta.bookId || state.book?.id || ""),
-          chapterId: String(meta.chapterId || ""),
-          sentence: text,
-          mode: "reader",
-          context: {
-            bookTitle: state.book?.title || "",
-            chapterTitle: String(meta.chapterTitle || ""),
-            paragraph: buildExplainContext(meta.paragraph, sentence),
-          },
-        }),
-      },
-      12000
-    );
-    if (payload?.billing) {
-      updateBilling(payload.billing);
-    }
-    state.explain = {
-      loading: false,
-      sentenceId: String(sentence.id || ""),
-      cached: Boolean(payload.cached),
-      result: payload.result || null,
-      error: "",
-    };
-  } catch (error) {
-    const errorCode = String(error?.payload?.code || "").trim().toUpperCase();
-    let friendly = `句子解释失败：${String(error?.message || "").trim() || "未知错误"}`;
-    if (errorCode === "AI_NOT_CONFIGURED") {
-      friendly = "AI 解释功能暂未配置。";
-    } else if (errorCode === "EXPLAIN_LIMIT_REACHED") {
-      friendly = "今日 AI 解释次数已用完。";
-    } else if (errorCode === "AI_PROVIDER_ERROR") {
-      friendly = "AI 解释服务暂时不可用，请稍后再试。";
-    }
-    state.explain = {
-      loading: false,
-      sentenceId: String(sentence.id || ""),
-      cached: false,
-      result: null,
-      error: friendly,
-    };
-    showToast(friendly, true);
-  }
-  renderExplainPanel();
-}
-
-function markSelection() {
-  if (!state.selectedRange) return;
-  const para = els.readerContent.querySelector(
-    `.reader-para[data-chapter-id="${state.selectedRange.chapterId}"][data-pindex="${state.selectedRange.paraIndex}"]`
-  );
-  if (!para) return;
-  const chars = para.querySelectorAll(".jp-char");
-  for (let i = state.selectedRange.start; i < state.selectedRange.end; i += 1) {
-    if (chars[i]) chars[i].classList.add("selected");
-  }
-}
-
-function clearSelectionMark() {
-  els.readerContent
-    .querySelectorAll(".jp-char.selected")
-    .forEach((el) => el.classList.remove("selected"));
-}
-
-function onAddWord() {
-  if (!state.selected) return;
-  const existed = state.vocab.find(
-    (item) => item.word === state.selected.word || item.lemma === state.selected.lemma
-  );
-  if (existed) {
-    existed.lookupCount = (existed.lookupCount || 1) + 1;
-    saveJSON(STORAGE_KEYS.vocab, state.vocab);
-    renderVocab();
-    return;
-  }
-
-  state.vocab.push({
-    word: state.selected.word,
-    lemma: state.selected.lemma,
-    reading: state.selected.reading,
-    pos: state.selected.pos,
-    meaning: state.selected.meaning,
-    level: 0,
-    lookupCount: 1,
-    nextReview: Date.now(),
-    createdAt: Date.now(),
-  });
-  saveJSON(STORAGE_KEYS.vocab, state.vocab);
-  renderVocab();
-  renderReader();
-  requestAnalyze(true);
-  void trackEvent("vocab_added", {
-    word: state.selected.word,
-    lemma: state.selected.lemma,
-  });
-}
-
-function onAddNoteClick() {
-  if (!state.selected) return;
-  openToolsSection();
-  setRightPanelTab("notes", false);
-  els.noteInput.value = `${state.selected.word}: `;
-  els.noteInput.focus();
-}
-
-function onSaveNote() {
-  if (!state.selected || !state.selectedRange) {
-    setStatus("先选中一个词再保存批注。", true);
-    return;
-  }
-  const text = els.noteInput.value.trim();
-  if (!text) {
-    setStatus("批注内容不能为空。", true);
-    return;
-  }
-  const note = {
-    id: makeId("note"),
-    chapterId: state.selectedRange.chapterId,
-    chapterIndex: chapterIndexById(state.selectedRange.chapterId),
-    paraIndex: state.selectedRange.paraIndex,
-    start: state.selectedRange.start,
-    end: state.selectedRange.end,
-    word: state.selected.word,
-    lemma: state.selected.lemma,
-    note: text,
-    createdAt: Date.now(),
-  };
-  state.notes.unshift(note);
-  saveJSON(STORAGE_KEYS.notes, state.notes);
-  els.noteInput.value = "";
-  renderNotes();
-  renderReader();
-  setStatus("批注已保存。");
-}
-
-function renderNotes() {
-  els.noteList.textContent = "";
-  if (!state.notes.length) {
-    appendListEmpty(els.noteList, "暂无批注");
-    return;
-  }
-  state.notes.slice(0, 80).forEach((item) => {
-    const li = document.createElement("li");
-    li.className = "simple-item";
-
-    const title = document.createElement("strong");
-    title.textContent = item.word || item.lemma || "批注";
-    const text = document.createElement("p");
-    text.className = "meta";
-    text.textContent = item.note.slice(0, 48);
-
-    const jumpBtn = document.createElement("button");
-    jumpBtn.className = "tiny-btn";
-    jumpBtn.dataset.action = "jump";
-    jumpBtn.dataset.noteId = item.id;
-    jumpBtn.textContent = "跳转";
-
-    const removeBtn = document.createElement("button");
-    removeBtn.className = "tiny-btn";
-    removeBtn.dataset.action = "remove";
-    removeBtn.dataset.noteId = item.id;
-    removeBtn.textContent = "删除";
-
-    li.append(title, text, jumpBtn, removeBtn);
-    els.noteList.appendChild(li);
-  });
-}
-
-function onNoteListClick(event) {
-  const button = event.target.closest("[data-action][data-note-id]");
-  if (!button) return;
-  const noteId = button.dataset.noteId;
-  const action = button.dataset.action;
-  const note = state.notes.find((item) => item.id === noteId);
-  if (!note) return;
-
-  if (action === "remove") {
-    state.notes = state.notes.filter((item) => item.id !== noteId);
-    saveJSON(STORAGE_KEYS.notes, state.notes);
-    renderNotes();
-    renderReader();
-    return;
-  }
-
-  if (action === "jump") {
-    void jumpToPosition(note.chapterId, note.paraIndex, note.start, note.end, note.word, note.lemma);
-  }
-}
-
-function onAddBookmark() {
-  const chapterId = state.selectedRange?.chapterId || state.lastCursor.chapterId;
-  const chapterIndex = state.selectedRange
-    ? chapterIndexById(chapterId)
-    : Number.isFinite(state.lastCursor.chapterIndex)
-    ? state.lastCursor.chapterIndex
-    : state.currentChapter;
-  const chapter = getChapterById(chapterId) || state.book?.chapters?.[chapterIndex];
-  if (!chapter) return;
-
-  const paraIndex = state.selectedRange ? state.selectedRange.paraIndex : state.lastCursor.paraIndex;
-  const charIndex = state.selectedRange ? state.selectedRange.start : state.lastCursor.charIndex;
-  const paragraph = chapter.paragraphs[paraIndex] || "";
-  const excerpt = paragraph.slice(Math.max(0, charIndex - 8), charIndex + 18).trim() || "书签";
-
-  state.bookmarks.unshift({
-    id: makeId("bm"),
-    chapterId: chapter.id,
-    chapterIndex: chapterIndexById(chapter.id),
-    paraIndex,
-    charIndex,
-    excerpt,
-    createdAt: Date.now(),
-  });
-  saveJSON(STORAGE_KEYS.bookmarks, state.bookmarks);
-  renderBookmarks();
-  setStatus("书签已添加。");
-}
-
-function renderBookmarks() {
-  const containers = [els.bookmarkList, els.notesBookmarkList].filter(Boolean);
-  containers.forEach((listEl) => {
-    listEl.textContent = "";
-    if (!state.bookmarks.length) {
-      appendListEmpty(listEl, "暂无书签");
-      return;
-    }
-    state.bookmarks.slice(0, 80).forEach((item) => {
-      const li = document.createElement("li");
-      li.className = "simple-item";
-      const title = document.createElement("strong");
-      title.textContent = item.excerpt;
-      const meta = document.createElement("p");
-      meta.className = "meta";
-      meta.textContent = `章节 ${Number(item.chapterIndex) + 1}`;
-
-      const jumpBtn = document.createElement("button");
-      jumpBtn.className = "tiny-btn";
-      jumpBtn.dataset.action = "jump";
-      jumpBtn.dataset.bookmarkId = item.id;
-      jumpBtn.textContent = "跳转";
-
-      const removeBtn = document.createElement("button");
-      removeBtn.className = "tiny-btn";
-      removeBtn.dataset.action = "remove";
-      removeBtn.dataset.bookmarkId = item.id;
-      removeBtn.textContent = "删除";
-
-      li.append(title, meta, jumpBtn, removeBtn);
-      listEl.appendChild(li);
-    });
-  });
-}
-
-function onBookmarkListClick(event) {
-  const button = event.target.closest("[data-action][data-bookmark-id]");
-  if (!button) return;
-  const bookmarkId = button.dataset.bookmarkId;
-  const action = button.dataset.action;
-  const bookmark = state.bookmarks.find((item) => item.id === bookmarkId);
-  if (!bookmark) return;
-
-  if (action === "remove") {
-    state.bookmarks = state.bookmarks.filter((item) => item.id !== bookmarkId);
-    saveJSON(STORAGE_KEYS.bookmarks, state.bookmarks);
-    renderBookmarks();
-    return;
-  }
-  if (action === "jump") {
-    void jumpToPosition(bookmark.chapterId, bookmark.paraIndex, bookmark.charIndex, bookmark.charIndex + 1);
-  }
-}
-
-async function jumpToPosition(chapterId, paraIndex, start, end, word = "", lemma = "") {
-  if (!state.book || !state.book.chapters.length) return;
-  const idx = state.book.chapters.findIndex((item) => item.id === chapterId);
-  if (idx >= 0) {
-    state.currentChapter = idx;
-    syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
-    ensureRenderedThrough(idx);
-  }
-  persistCurrentChapterState();
-  if (idx >= 0) {
-    try {
-      await ensureChapterLoaded(idx, { prefetch: false });
-    } catch {
-      // Keep local state if remote chapter load fails.
-    }
-  }
-  renderBookMeta();
-  renderChapterList();
-  renderReader();
-
-  state.selectedRange = {
-    chapterId: state.book.chapters[state.currentChapter].id,
-    paraIndex: Number(paraIndex),
-    start: Number(start),
-    end: Number(end),
-  };
-  state.selected = {
-    word: word || state.selected?.word || "定位",
-    lemma: lemma || word || state.selected?.lemma || "-",
-    reading: state.selected?.reading || "-",
-    pos: state.selected?.pos || "-",
-    meaning: state.selected?.meaning || "-",
-    example: state.selected?.example || "-",
-    jlpt: state.selected?.jlpt || "",
-  };
-  markSelection();
-  renderLookupPanel();
-
-  const para = els.readerContent.querySelector(
-    `.reader-para[data-chapter-id="${chapterId}"][data-pindex="${paraIndex}"]`
-  );
-  if (para) {
-    para.scrollIntoView({ behavior: "smooth", block: "center" });
-  }
-  void syncReadingProgress({
-    chapterId,
-    chapterIndex: idx >= 0 ? idx : state.currentChapter,
-    paraIndex,
-    charIndex: start,
-  });
-}
-
-function renderVocab() {
-  els.vocabList.textContent = "";
-  if (!state.vocab.length) {
-    appendListEmpty(els.vocabList, "还没有生词");
-    renderStats();
-    return;
-  }
-
-  const sorted = [...state.vocab].sort((a, b) => a.nextReview - b.nextReview);
-  sorted.forEach((item) => {
-    const li = document.createElement("li");
-    li.className = "vocab-item";
-
-    const main = document.createElement("div");
-    main.className = "vocab-main";
-    const word = document.createElement("strong");
-    word.className = "vocab-word";
-    word.textContent = `${item.word} (${item.reading || "-"})`;
-    const due = document.createElement("span");
-    const isDue = item.nextReview <= Date.now();
-    due.className = "meta";
-    due.textContent = isDue ? "可复习" : formatDate(item.nextReview);
-    main.append(word, due);
-
-    const meaning = document.createElement("p");
-    meaning.className = "vocab-meaning";
-    meaning.textContent = `${item.meaning} · 次数 ${item.lookupCount || 1}`;
-
-    const actions = document.createElement("div");
-    actions.className = "vocab-actions";
-    actions.append(
-      tinyBtn("记住", "known", item.word),
-      tinyBtn("再看", "again", item.word),
-      tinyBtn("删词", "remove", item.word)
-    );
-
-    li.append(main, meaning, actions);
-    els.vocabList.appendChild(li);
-  });
-  renderStats();
-}
-
-function tinyBtn(label, action, word) {
-  const button = document.createElement("button");
-  button.className = "tiny-btn";
-  button.textContent = label;
-  button.dataset.action = action;
-  button.dataset.word = word;
-  return button;
-}
-
-function onVocabAction(event) {
-  const actionBtn = event.target.closest("[data-action][data-word]");
-  if (!actionBtn) return;
-  const word = actionBtn.dataset.word;
-  const action = actionBtn.dataset.action;
-  const item = state.vocab.find((entry) => entry.word === word);
-  if (!item) return;
-
-  if (action === "known") {
-    const intervals = [1, 3, 7, 14, 30, 60];
-    item.level = Math.min((item.level || 0) + 1, intervals.length - 1);
-    item.nextReview = Date.now() + intervals[item.level] * DAY_MS;
-  }
-  if (action === "again") {
-    item.level = 0;
-    item.nextReview = Date.now() + DAY_MS;
-  }
-  if (action === "remove") {
-    state.vocab = state.vocab.filter((entry) => entry.word !== word);
-  }
-
-  saveJSON(STORAGE_KEYS.vocab, state.vocab);
-  renderVocab();
-  renderReader();
-  requestAnalyze(true);
-}
-
-async function exportVocabCsv() {
-  let sourceVocab = state.vocab;
-  if (state.sync.accountMode === "registered" && hasFeature("cloudSync")) {
-    try {
-      const payload = await fetchJson(
-        `/api/export/vocab?userId=${encodeURIComponent(state.sync.userId)}`,
-        { method: "GET" }
-      );
-      if (Array.isArray(payload?.vocab)) {
-        sourceVocab = payload.vocab;
-        state.vocab = payload.vocab;
-        saveJSON(STORAGE_KEYS.vocab, state.vocab);
-      }
-    } catch (error) {
-      setStatus(`同步云端词汇失败，改用本地数据导出：${error.message}`, true);
-    }
-  }
-  if (!sourceVocab.length) return;
-  const maxRows = Math.max(1, Number(state.billing.features.csvExportMaxRows) || 60);
-  const fullExportEnabled = maxRows >= sourceVocab.length;
-  const exportItems = fullExportEnabled ? sourceVocab : sourceVocab.slice(0, maxRows);
-
-  const headers = [
-    "word",
-    "lemma",
-    "reading",
-    "pos",
-    "meaning",
-    "level",
-    "lookupCount",
-    "nextReview",
-  ];
-  const rows = [headers.join(",")];
-  exportItems.forEach((item) => {
-    const row = [
-      item.word,
-      item.lemma,
-      item.reading,
-      item.pos,
-      item.meaning,
-      item.level,
-      item.lookupCount,
-      formatDate(item.nextReview),
-    ].map(csvEscape);
-    rows.push(row.join(","));
-  });
-  const blob = new Blob([`\ufeff${rows.join("\n")}`], {
-    type: "text/csv;charset=utf-8;",
-  });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `jp_vocab_${Date.now()}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-  if (!fullExportEnabled) {
-    setStatus(`基础版仅可导出前 ${maxRows} 条，升级 Pro 可导出全部。`, true);
-  } else {
-    setStatus(`导出完成，共 ${exportItems.length} 条。`);
-  }
-}
-
-function onSettingsChange() {
-  const prevDifficultyMode = state.settings.difficultyMode;
-  const prevMojiScheme = state.settings.mojiScheme;
-  const prevAutoPageSeconds = state.settings.autoPageSeconds;
-  state.settings.fontSize = Number(els.fontSizeRange?.value || state.settings.fontSize || 21);
-  state.settings.lineHeight = Number(els.lineHeightRange?.value || state.settings.lineHeight || 1.9);
-  state.settings.readerFont = normalizeReaderFont(els.readerFontSelect?.value || state.settings.readerFont);
-  state.settings.difficultyMode = String(els.difficultyModeSelect?.value || "n1n2n3");
-  state.settings.mojiScheme = normalizeMojiScheme(els.mojiSchemeSelect?.value || state.settings.mojiScheme);
-  state.settings.autoPageSeconds = clampNumber(
-    Number(els.autoPageSecondsRange?.value) || 12,
-    6,
-    40
-  );
-  state.settings.ttsRate = Number(els.ttsRateRange?.value || state.settings.ttsRate || 1);
-  state.settings.ttsVoice = els.ttsVoiceSelect?.value || "";
-  saveJSON(STORAGE_KEYS.settings, state.settings);
-  applySettings();
-
-  if (prevDifficultyMode !== state.settings.difficultyMode) {
-    scheduleDifficultyPaint(true);
-    applyVisibleDifficultyToDom();
-  }
-  if (prevMojiScheme !== state.settings.mojiScheme) {
-    renderLookupPanel();
-  }
-  if (state.autoPageTimerId && prevAutoPageSeconds !== state.settings.autoPageSeconds) {
-    startAutoPage();
-    setStatus(`自动翻页间隔已更新为 ${state.settings.autoPageSeconds} 秒。`);
-  }
-}
-
-function applySettings() {
-  if (!["n1n2n3", "n1n2", "n1", "off"].includes(state.settings.difficultyMode)) {
-    state.settings.difficultyMode = "n1n2n3";
-  }
-  state.settings.readingMode = normalizeReadingMode(state.settings.readingMode);
-  state.settings.focusMode = Boolean(state.settings.focusMode);
-  state.settings.rightPanelTab = normalizeRightPanelTab(state.settings.rightPanelTab);
-  state.settings.readerFont = normalizeReaderFont(state.settings.readerFont);
-  state.settings.mojiScheme = normalizeMojiScheme(state.settings.mojiScheme);
-  state.settings.fontSize = clampNumber(Number(state.settings.fontSize) || 21, 16, 32);
-  state.settings.lineHeight = clampNumber(Number(state.settings.lineHeight) || 1.9, 1.4, 2.4);
-  state.settings.autoPageSeconds = clampNumber(
-    Number(state.settings.autoPageSeconds) || 12,
-    6,
-    40
-  );
-  syncReaderState();
-  if (els.fontSizeRange) {
-    els.fontSizeRange.value = String(state.settings.fontSize);
-  }
-  if (els.lineHeightRange) {
-    els.lineHeightRange.value = String(state.settings.lineHeight);
-  }
-  if (els.readerFontSelect) {
-    els.readerFontSelect.value = state.settings.readerFont;
-  }
-  if (els.difficultyModeSelect) {
-    els.difficultyModeSelect.value = state.settings.difficultyMode;
-  }
-  if (els.mojiSchemeSelect) {
-    els.mojiSchemeSelect.value = state.settings.mojiScheme;
-  }
-  if (els.autoPageSecondsRange) {
-    els.autoPageSecondsRange.value = String(state.settings.autoPageSeconds);
-  }
-  if (els.autoPageSecondsText) {
-    els.autoPageSecondsText.textContent = `${state.settings.autoPageSeconds} 秒 / 页`;
-  }
-  if (els.ttsRateRange) {
-    els.ttsRateRange.value = String(state.settings.ttsRate);
-  }
-  els.readerContent.style.fontSize = `${state.settings.fontSize}px`;
-  els.readerContent.style.lineHeight = String(state.settings.lineHeight);
-  els.readerContent.style.fontFamily = READER_FONT_MAP[state.settings.readerFont];
-  document.body.classList.toggle("focus-mode", state.settings.focusMode);
-  els.toggleFocusBtn.textContent = `专注模式: ${state.settings.focusMode ? "开" : "关"}`;
-  els.toggleFocusBtn.classList.toggle("auto-on", state.settings.focusMode);
-  renderReadingModeUi();
-  if (state.settings.readingMode !== "paged" && state.autoPageTimerId) {
-    stopAutoPage();
-  }
-  renderRightTabs();
-  renderAutoPageUi();
-  if (isPagedMode()) {
-    syncPagedPageState();
-  }
-}
+// Reader selection/annotations/ui logic lives in features/reader modules.
 
 function startTimer() {
   if (state.timerId) clearInterval(state.timerId);
@@ -3448,7 +1612,7 @@ async function checkApiHealth() {
   state.apiHealthPromise = (async () => {
     state.lastApiHealthCheckAt = Date.now();
     try {
-      const payload = await fetchJson("/api/health", { method: "GET" }, 2200);
+      const payload = await accountService.health({ timeoutMs: 2200 });
       state.apiOnline = Boolean(payload.ok);
       state.jmdictReady = Boolean(payload.jmdict);
       state.tokenizerBackend = payload.tokenizer || "fallback";
@@ -3563,16 +1727,14 @@ function normalizeJlptLevel(value) {
   return "";
 }
 
-function getJlptLevel(surface, lemma) {
+function getJlptLevel(surface, lemma, dictionaryForm = "") {
   if (!hasFullJlptMap()) return "";
-  const candidates = [lemma, surface]
-    .map((item) => String(item || "").trim())
-    .filter(Boolean);
-  for (const word of candidates) {
-    const level = normalizeJlptLevel(state.jlptMap[word]);
-    if (level) return level;
-  }
-  return "";
+  return findJlptMatch({
+    surface,
+    lemma,
+    dictionaryForm,
+    jlptMap: state.jlptMap,
+  }).level;
 }
 
 function escapeHtml(value) {
@@ -3649,173 +1811,8 @@ function handleBillingReturnParams() {
   window.history.replaceState({}, document.title, url.pathname + url.search + url.hash);
 }
 
-function sanitizeSyncUserId(value) {
-  const cleaned = String(value || "")
-    .trim()
-    .replace(/[^a-zA-Z0-9._-]+/g, "_")
-    .replace(/^[._-]+|[._-]+$/g, "");
-  return cleaned;
-}
-
-function normalizePlan(value) {
-  return String(value || "").toLowerCase() === "pro" ? "pro" : "free";
-}
-
-function normalizePayChannel(value) {
-  const raw = String(value || "").toLowerCase();
-  if (raw === "stripe") return "stripe";
-  if (raw === "alipay") return "alipay";
-  if (raw === "wechat") return "wechat";
-  return "stripe";
-}
-
-function normalizeBillingInterval(value) {
-  return String(value || "").toLowerCase() === "yearly" ? "yearly" : "monthly";
-}
-
-function normalizeBillingCycle(value) {
-  const raw = String(value || "").toLowerCase();
-  if (raw === "monthly") return "monthly";
-  if (raw === "yearly") return "yearly";
-  return "";
-}
-
-function normalizeBilling(raw) {
-  const source = raw && typeof raw === "object" ? raw : {};
-  const mergedFeatures = {
-    ...DEFAULT_BILLING.features,
-    ...(source.features && typeof source.features === "object" ? source.features : {}),
-  };
-  const mergedChannels = {
-    ...DEFAULT_BILLING.paymentChannels,
-    ...(source.paymentChannels && typeof source.paymentChannels === "object"
-      ? source.paymentChannels
-      : {}),
-  };
-  const mergedOfficialGateway = {
-    ...DEFAULT_BILLING.officialGateway,
-    ...(source.officialGateway && typeof source.officialGateway === "object"
-      ? source.officialGateway
-      : {}),
-  };
-  const sourceStripe = source.stripe && typeof source.stripe === "object" ? source.stripe : {};
-  const mergedStripeIntervals = {
-    ...DEFAULT_BILLING.stripe.intervals,
-    ...(sourceStripe.intervals && typeof sourceStripe.intervals === "object"
-      ? sourceStripe.intervals
-      : {}),
-  };
-  const stripeCustomerId = String(source.stripeCustomerId || sourceStripe.customerId || "");
-  const stripeSubscriptionId = String(source.stripeSubscriptionId || sourceStripe.subscriptionId || "");
-  return {
-    userId: sanitizeSyncUserId(source.userId || state.sync?.userId || ""),
-    paymentEnabled:
-      source.paymentEnabled === undefined
-        ? Boolean(DEFAULT_BILLING.paymentEnabled)
-        : Boolean(source.paymentEnabled),
-    entitlementPlan: normalizePlan(source.entitlementPlan || source.plan),
-    plan: normalizePlan(source.plan),
-    source: String(source.source || DEFAULT_BILLING.source),
-    subscriptionStatus: String(source.subscriptionStatus || ""),
-    billingCycle: normalizeBillingCycle(source.billingCycle || sourceStripe.billingCycle),
-    lastPaidChannel: source.lastPaidChannel ? normalizePayChannel(source.lastPaidChannel) : "",
-    lastOrderId: String(source.lastOrderId || ""),
-    planExpireAt: Number(source.planExpireAt || 0),
-    graceUntilAt: Number(source.graceUntilAt || 0),
-    paymentFailedAt: Number(source.paymentFailedAt || 0),
-    billingState: String(source.billingState || ""),
-    accessState: String(source.accessState || "free"),
-    accountMode: String(source.accountMode || "guest"),
-    appBaseUrl: String(source.appBaseUrl || DEFAULT_BILLING.appBaseUrl || ""),
-    features: {
-      advancedImport: Boolean(mergedFeatures.advancedImport),
-      cloudSync: Boolean(mergedFeatures.cloudSync),
-      csvExportMaxRows: Math.max(1, Number(mergedFeatures.csvExportMaxRows) || 60),
-      aiExplainDailyLimit: Number(mergedFeatures.aiExplainDailyLimit ?? 3),
-    },
-    paymentChannels: {
-      stripe: Boolean(mergedChannels.stripe),
-      wechat: Boolean(mergedChannels.wechat),
-      alipay: Boolean(mergedChannels.alipay),
-    },
-    officialGateway: {
-      stripe: Boolean(mergedOfficialGateway.stripe),
-      wechat: Boolean(mergedOfficialGateway.wechat),
-      alipay: Boolean(mergedOfficialGateway.alipay),
-    },
-    stripe: {
-      checkoutReady:
-        sourceStripe.checkoutReady === undefined
-          ? DEFAULT_BILLING.stripe.checkoutReady
-          : Boolean(sourceStripe.checkoutReady),
-      portalReady:
-        sourceStripe.portalReady === undefined
-          ? DEFAULT_BILLING.stripe.portalReady
-          : Boolean(sourceStripe.portalReady),
-      paymentLinkReady:
-        sourceStripe.paymentLinkReady === undefined
-          ? DEFAULT_BILLING.stripe.paymentLinkReady
-          : Boolean(sourceStripe.paymentLinkReady),
-      paymentLink: String(sourceStripe.paymentLink || "").trim(),
-      publishableKey: String(sourceStripe.publishableKey || DEFAULT_BILLING.stripe.publishableKey || "").trim(),
-      paymentMode: String(sourceStripe.paymentMode || DEFAULT_BILLING.stripe.paymentMode || "none"),
-      intervals: {
-        monthly: Boolean(mergedStripeIntervals.monthly),
-        yearly: Boolean(mergedStripeIntervals.yearly),
-      },
-      defaultInterval: normalizeBillingInterval(
-        sourceStripe.defaultInterval || (mergedStripeIntervals.monthly ? "monthly" : "yearly")
-      ),
-      customerId: stripeCustomerId,
-      subscriptionId: stripeSubscriptionId,
-    },
-    manualPlanChangeEnabled: Boolean(source.manualPlanChangeEnabled),
-    manualPaymentConfirmEnabled:
-      source.manualPaymentConfirmEnabled === undefined
-        ? DEFAULT_BILLING.manualPaymentConfirmEnabled
-        : Boolean(source.manualPaymentConfirmEnabled),
-    priceFen: Math.max(1, Number(source.priceFen || DEFAULT_BILLING.priceFen) || DEFAULT_BILLING.priceFen),
-    orderExpireMinutes: Math.max(
-      5,
-      Number(source.orderExpireMinutes || DEFAULT_BILLING.orderExpireMinutes) ||
-        DEFAULT_BILLING.orderExpireMinutes
-    ),
-    aiExplainUsedToday: Math.max(0, Number(source.aiExplainUsedToday || 0)),
-    aiExplainRemainingToday:
-      Number(source.aiExplainRemainingToday) < 0
-        ? -1
-        : Math.max(0, Number(source.aiExplainRemainingToday || 0)),
-    aiExplainCachedToday: Math.max(0, Number(source.aiExplainCachedToday || 0)),
-    aiExplainLimitedToday: Math.max(0, Number(source.aiExplainLimitedToday || 0)),
-    updatedAt: Number(source.updatedAt || 0),
-  };
-}
-
-function normalizeBillingOrder(raw) {
-  const source = raw && typeof raw === "object" ? raw : {};
-  return {
-    orderId: String(source.orderId || ""),
-    status: String(source.status || ""),
-    channel: normalizePayChannel(source.channel || "stripe"),
-    interval: normalizeBillingInterval(source.interval || "monthly"),
-    sessionId: String(source.sessionId || ""),
-    paymentMode: String(source.paymentMode || ""),
-    payUrl: String(source.payUrl || ""),
-    amountFen: Math.max(0, Number(source.amountFen || 0)),
-    createdAt: Number(source.createdAt || 0),
-    updatedAt: Number(source.updatedAt || 0),
-    expiresAt: Number(source.expiresAt || 0),
-    paidSource: String(source.paidSource || ""),
-    externalTradeNo: String(source.externalTradeNo || ""),
-    orderStatusPath: String(source.orderStatusPath || ""),
-    verificationHint: String(source.verificationHint || ""),
-    manualConfirmEnabled: Boolean(source.manualConfirmEnabled),
-    paidAt: Number(source.paidAt || 0),
-  };
-}
-
 function updateBilling(nextBilling, persist = true) {
-  state.billing = normalizeBilling({
+  state.billing = normalizeBillingState({
     ...state.billing,
     ...nextBilling,
     userId: nextBilling?.userId || state.sync.userId,
@@ -3828,7 +1825,7 @@ function updateBilling(nextBilling, persist = true) {
 }
 
 function updateBillingOrder(nextOrder, persist = true) {
-  state.billingOrder = normalizeBillingOrder({
+  state.billingOrder = normalizeBillingOrderState({
     ...state.billingOrder,
     ...nextOrder,
   });
@@ -3975,9 +1972,9 @@ function renderBillingUi() {
   }
   if (els.planHint) {
     if (!paymentsEnabled) {
-      els.planHint.textContent = "当前支付渠道尚未配置（Stripe 测试模式未启用）。";
+      els.planHint.textContent = "当前支付渠道尚未配置（Stripe 未启用）。";
     } else if (!channelEnabled("stripe")) {
-      els.planHint.textContent = "当前仅支持 Stripe 订阅，请联系管理员完成 Stripe 测试配置。";
+      els.planHint.textContent = "当前仅支持 Stripe 订阅，请联系管理员完成 Stripe 配置。";
     } else {
       const baseHint =
         accountMode === "registered"
@@ -4062,7 +2059,7 @@ function renderBillingUi() {
       els.manageBillingBtn.textContent = "管理订阅";
     }
     if (els.billingFlowHint) {
-      els.billingFlowHint.textContent = "当前支付渠道尚未配置（Stripe 测试模式未启用）。";
+      els.billingFlowHint.textContent = "当前支付渠道尚未配置（Stripe 未启用）。";
     }
   } else {
     const hasCustomer = Boolean(stripeConfig.customerId);
@@ -4096,7 +2093,7 @@ async function refreshPaymentOptions(silent = true) {
     return false;
   }
   try {
-    const payload = await fetchJson("/api/payment/options", { method: "GET" });
+    const payload = await billingService.getPaymentOptions();
     const stripeOptions = payload?.stripe && typeof payload.stripe === "object" ? payload.stripe : {};
     updateBilling({
       paymentEnabled: Boolean(payload?.enabled),
@@ -4136,10 +2133,7 @@ async function refreshBillingPlan(silent = false) {
   }
   try {
     await refreshPaymentOptions(true);
-    const payload = await fetchJson(
-      `/api/billing/plan?userId=${encodeURIComponent(userId)}`,
-      { method: "GET" }
-    );
+    const payload = await billingService.getPlan(userId);
     if (payload?.billing) {
       updateBilling(payload.billing);
       if (payload.billing.lastOrderId) {
@@ -4207,15 +2201,11 @@ async function onRegisterAccount(options = {}) {
   }
   setRegisterButtonLoading(true);
   try {
-    const payload = await fetchJson("/api/auth/register", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        username,
-        password,
-        anonymousId: state.sync.anonymousId || state.sync.userId,
-        snapshot: createSnapshot(),
-      }),
+    const payload = await accountService.register({
+      username,
+      password,
+      anonymousId: state.sync.anonymousId || state.sync.userId,
+      snapshot: createSnapshot(),
     });
     state.sync = {
       ...DEFAULT_SYNC,
@@ -4281,13 +2271,9 @@ async function loginAccount() {
   }
   setLoginButtonLoading(true);
   try {
-    const payload = await fetchJson("/api/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        username,
-        password,
-      }),
+    const payload = await accountService.login({
+      username,
+      password,
     });
     state.sync = {
       ...DEFAULT_SYNC,
@@ -4299,8 +2285,8 @@ async function loginAccount() {
       registeredAt: state.sync.registeredAt || Date.now(),
     };
     persistSyncState();
-    localStorage.setItem("accountToken", state.sync.accountToken);
-    localStorage.setItem("userId", state.sync.userId);
+    saveStorageValue("accountToken", state.sync.accountToken);
+    saveStorageValue("userId", state.sync.userId);
     closeAccountModal();
     window.location.reload();
     return true;
@@ -4326,13 +2312,9 @@ async function completeStripeCheckout(sessionId) {
     return false;
   }
   try {
-    const payload = await fetchJson("/api/billing/checkout-complete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sessionId: normalizedSessionId,
-        userId: state.sync.userId,
-      }),
+    const payload = await billingService.checkoutComplete({
+      sessionId: normalizedSessionId,
+      userId: state.sync.userId,
     });
     if (payload?.billing) {
       updateBilling(payload.billing);
@@ -4359,12 +2341,14 @@ async function completeStripeCheckout(sessionId) {
 
 async function onUpgradeProPlan() {
   if (!state.billing.paymentEnabled) {
-    setStatus("当前支付渠道尚未配置（Stripe 测试模式未启用）。", true);
+    setStatus("当前支付渠道尚未配置（Stripe 未启用）。", true);
     return;
   }
   if (state.sync.accountMode !== "registered") {
-    const registered = await onRegisterAccount({ upgradeAfter: false });
-    if (!registered) return;
+    closeAccountMenu();
+    openAccountModal({ panel: "register" });
+    setStatus("请先注册或登录账号，再发起 Pro 订阅。");
+    return;
   }
   onSyncUserChange({ refreshBilling: false });
   if (!state.apiOnline) {
@@ -4392,15 +2376,11 @@ async function onUpgradeProPlanByStripe() {
   }
   const interval = normalizeBillingInterval(state.billingOrder.interval || "monthly");
   try {
-    const payload = await fetchJson("/api/billing/create-checkout-session", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        userId: state.sync.userId,
-        interval,
-        billingCycle: interval,
-        billing_cycle: interval,
-      }),
+    const payload = await billingService.createCheckoutSession({
+      userId: state.sync.userId,
+      interval,
+      billingCycle: interval,
+      billing_cycle: interval,
     });
     if (payload?.billing) {
       updateBilling(payload.billing);
@@ -4460,12 +2440,8 @@ async function onOpenBillingPortal() {
 
 async function onOpenStripeBillingPortal() {
   try {
-    const payload = await fetchJson("/api/billing/create-portal-session", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        userId: state.sync.userId,
-      }),
+    const payload = await billingService.createPortalSession({
+      userId: state.sync.userId,
     });
     if (payload?.billing) {
       updateBilling(payload.billing);
@@ -4490,16 +2466,12 @@ async function openFeedbackPrompt(kind) {
   const message = window.prompt(`${promptLabel}：请输入要提交的内容`);
   if (!message || !message.trim()) return;
   try {
-    await fetchJson("/api/feedback", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        kind,
-        message: message.trim(),
-        userId: state.sync.userId,
-        bookId: state.book?.id || "",
-        chapterId: currentChapterData()?.id || "",
-      }),
+    await accountService.sendFeedback({
+      kind,
+      message: message.trim(),
+      userId: state.sync.userId,
+      bookId: state.book?.id || "",
+      chapterId: currentChapterData()?.id || "",
     });
     setStatus(`${promptLabel}已发送。`);
   } catch (error) {
@@ -4541,10 +2513,7 @@ async function exportProgressJson() {
     return;
   }
   try {
-    const payload = await fetchJson(
-      `/api/export/progress?userId=${encodeURIComponent(state.sync.userId)}`,
-      { method: "GET" }
-    );
+    const payload = await syncService.exportProgress(state.sync.userId);
     downloadJsonFile(`progress-${state.sync.userId}.json`, payload);
     setStatus("已导出云端进度。");
   } catch (error) {
@@ -4578,11 +2547,7 @@ async function onDeleteCloudData() {
   }
   if (!window.confirm("删除云端书籍、同步快照和进度？")) return;
   try {
-    await fetchJson("/api/cloud/delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId: state.sync.userId }),
-    });
+    await accountService.deleteCloudData({ userId: state.sync.userId });
     await onLoadSampleBook({ silentStatus: true });
     setStatus("云端数据已删除。");
   } catch (error) {
@@ -4597,21 +2562,17 @@ async function onDeleteAccount() {
   }
   if (!window.confirm("删除账号及其全部云端数据？此操作不可恢复。")) return;
   try {
-    await fetchJson("/api/account/delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId: state.sync.userId }),
-    });
+    await accountService.deleteAccount({ userId: state.sync.userId });
     state.vocab = [];
     state.notes = [];
     state.bookmarks = [];
     state.stats = { lookupCount: 0, totalSeconds: 0 };
     state.book = null;
-    state.currentChapter = 0;
+    setCurrentChapterIndex(0);
     syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
     state.sync = { ...DEFAULT_SYNC };
     ensureSessionIdentity();
-    state.billing = normalizeBilling(DEFAULT_BILLING);
+    state.billing = normalizeBillingState(DEFAULT_BILLING);
     saveJSON(STORAGE_KEYS.vocab, state.vocab);
     saveJSON(STORAGE_KEYS.notes, state.notes);
     saveJSON(STORAGE_KEYS.bookmarks, state.bookmarks);
@@ -4730,13 +2691,9 @@ async function onSyncPush() {
     }
   }
   try {
-    const payload = await fetchJson("/api/sync/push", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        userId: state.sync.userId,
-        snapshot: createSnapshot(),
-      }),
+    const payload = await syncService.push({
+      userId: state.sync.userId,
+      snapshot: createSnapshot(),
     });
     if (!payload.ok) throw new Error(payload.error || "上传失败");
     updateCloudSyncMeta({
@@ -4792,10 +2749,7 @@ async function onSyncPull() {
     }
   }
   try {
-    const payload = await fetchJson(
-      `/api/sync/pull?userId=${encodeURIComponent(state.sync.userId)}`,
-      { method: "GET" }
-    );
+    const payload = await syncService.pull(state.sync.userId);
     if (!payload.ok) throw new Error(payload.error || "拉取失败");
     const snapshot = payload.data?.snapshot || {};
     if (!Object.keys(snapshot).length) {
@@ -4851,16 +2805,13 @@ function applySnapshot(snapshot) {
   if (snapshot.book && Array.isArray(snapshot.book.chapters)) {
     state.book = normalizeBook(snapshot.book);
   }
-  state.currentChapter = clampChapterIndex(snapshot.currentChapter);
+  setCurrentChapterIndex(snapshot.currentChapter);
   syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
   if (Array.isArray(snapshot.vocab)) state.vocab = snapshot.vocab;
   if (Array.isArray(snapshot.notes)) state.notes = snapshot.notes;
   if (Array.isArray(snapshot.bookmarks)) state.bookmarks = snapshot.bookmarks;
   if (snapshot.settings) {
-    state.settings = {
-      ...state.settings,
-      ...snapshot.settings,
-    };
+    state.settingsStore.update(snapshot.settings);
   }
   if (snapshot.stats) {
     state.stats = {
@@ -4890,16 +2841,12 @@ function applySnapshot(snapshot) {
   state.scrollBaseChapter = clampChapterIndex(state.currentChapter);
   state.renderedChapterCount = initialRenderedChapterCount();
   syncReaderState({ currentPageIndex: 0, totalPagesInChapter: 1 });
-  state.selected = null;
-  state.selectedSentence = null;
-  state.explain = {
-    loading: false,
-    sentenceId: "",
-    cached: false,
-    result: null,
-    error: "",
-  };
-  state.selectedRange = null;
+  setSelectionState({
+    selected: null,
+    selectedSentence: null,
+    selectedRange: null,
+  });
+  resetExplainState();
   state.paragraphTokensCache.clear();
   state.difficultyRangesCache.clear();
   state.difficultyPending.clear();
@@ -4918,7 +2865,7 @@ function applySnapshot(snapshot) {
 }
 
 function initTtsVoices() {
-  if (!("speechSynthesis" in window)) {
+  if (!ttsService.isSupported()) {
     els.ttsPlayBtn.disabled = true;
     els.ttsStopBtn.disabled = true;
     els.ttsVoiceSelect.disabled = true;
@@ -4926,7 +2873,7 @@ function initTtsVoices() {
     return;
   }
   const updateVoices = () => {
-    const voices = speechSynthesis.getVoices();
+    const voices = ttsService.listVoices();
     const jpVoices = voices.filter((voice) => voice.lang.toLowerCase().startsWith("ja"));
     const activeVoices = jpVoices.length ? jpVoices : voices;
 
@@ -4946,39 +2893,33 @@ function initTtsVoices() {
       return;
     }
 
-    const preferred = activeVoices.find((voice) => voice.name === state.settings.ttsVoice);
+    const preferred = activeVoices.find((voice) => voice.name === state.settingsStore.ttsVoice);
     const finalVoice = preferred || activeVoices[0];
     els.ttsVoiceSelect.value = finalVoice.name;
-    state.settings.ttsVoice = finalVoice.name;
-    saveJSON(STORAGE_KEYS.settings, state.settings);
+    state.settingsStore.set("ttsVoice", finalVoice.name);
+    saveJSON(STORAGE_KEYS.settings, state.settingsStore.values);
   };
 
   updateVoices();
-  speechSynthesis.onvoiceschanged = updateVoices;
+  window.speechSynthesis.onvoiceschanged = updateVoices;
 }
 
 function onPlayTts() {
   const chapter = currentChapterData();
   if (!chapter) return;
   onStopTts();
-  const utter = new SpeechSynthesisUtterance(chapter.text);
-  utter.lang = "ja-JP";
-  utter.rate = Number(state.settings.ttsRate || 1);
-
-  const voice = speechSynthesis
-    .getVoices()
-    .find((item) => item.name === (state.settings.ttsVoice || els.ttsVoiceSelect.value));
-  if (voice) utter.voice = voice;
-
-  utter.onstart = () => setStatus(`开始朗读：${chapter.title}`);
-  utter.onend = () => setStatus("朗读完成。");
-  utter.onerror = () => setStatus("朗读失败。", true);
-  state.ttsUtterance = utter;
-  speechSynthesis.speak(utter);
+  state.ttsUtterance = ttsService.speak(chapter.text, {
+    lang: "ja-JP",
+    rate: Number(state.settingsStore.ttsRate || 1),
+    voiceName: state.settingsStore.ttsVoice || els.ttsVoiceSelect.value,
+    onStart: () => setStatus(`开始朗读：${chapter.title}`),
+    onEnd: () => setStatus("朗读完成。"),
+    onError: () => setStatus("朗读失败。", true),
+  });
 }
 
 function onStopTts() {
-  if ("speechSynthesis" in window) speechSynthesis.cancel();
+  ttsService.stop();
   state.ttsUtterance = null;
 }
 
@@ -5000,6 +2941,13 @@ function setStatus(message, isError = false) {
 }
 
 function showToast(message, isError = false) {
+  if (uiStore?.setToast) {
+    uiStore.setToast(message, isError);
+  } else if (uiStore?.toast) {
+    uiStore.toast.visible = true;
+    uiStore.toast.message = String(message || "");
+    uiStore.toast.isError = Boolean(isError);
+  }
   if (!els.toast) {
     setStatus(message, isError);
     return;
@@ -5013,6 +2961,11 @@ function showToast(message, isError = false) {
   state.toastTimerId = setTimeout(() => {
     els.toast.hidden = true;
     state.toastTimerId = null;
+    if (uiStore?.setToast) {
+      uiStore.setToast("", false);
+    } else if (uiStore?.toast) {
+      uiStore.toast.visible = false;
+    }
   }, 2400);
 }
 
@@ -5047,6 +3000,7 @@ async function trackEvent(name, payload = {}, options = {}) {
 }
 
 async function fetchJson(url, options = {}, timeoutMs = 6000) {
+  // Keep this helper only for endpoints not yet wrapped by services/* (books/import/events/local data).
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -5091,15 +3045,6 @@ function resolveRequestUrl(url) {
   return raw;
 }
 
-function loadJSON(key, fallback) {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
 function setRegisterButtonLoading(isLoading) {
   state.registeringAccount = Boolean(isLoading);
   if (els.registerAccountInput) {
@@ -5139,8 +3084,8 @@ function shouldPersistBookStateToLocal() {
 }
 
 function clearPersistedBookState() {
-  localStorage.removeItem(STORAGE_KEYS.book);
-  localStorage.removeItem(STORAGE_KEYS.currentChapter);
+  removeStorageItem(STORAGE_KEYS.book);
+  removeStorageItem(STORAGE_KEYS.currentChapter);
 }
 
 function persistBookState(options = {}) {
@@ -5182,11 +3127,11 @@ function getLoginErrorMessage(error) {
 }
 
 function logoutAccount() {
-  localStorage.removeItem("accountToken");
-  localStorage.removeItem("userId");
+  removeStorageItem("accountToken");
+  removeStorageItem("userId");
 
   const guestId = createAnonymousId();
-  localStorage.setItem("userId", guestId);
+  saveStorageValue("userId", guestId);
 
   state.sync = {
     ...DEFAULT_SYNC,
@@ -5196,12 +3141,12 @@ function logoutAccount() {
     accountToken: "",
     registeredAt: 0,
   };
-  state.billing = normalizeBilling({
+  state.billing = normalizeBillingState({
     ...DEFAULT_BILLING,
     userId: guestId,
     accountMode: "guest",
   });
-  state.billingOrder = normalizeBillingOrder({});
+  state.billingOrder = normalizeBillingOrderState({});
   persistSyncState();
   saveJSON(STORAGE_KEYS.billing, state.billing);
   saveJSON(STORAGE_KEYS.billingOrder, state.billingOrder);
@@ -5214,10 +3159,10 @@ function saveJSON(key, value) {
     (key === STORAGE_KEYS.book || key === STORAGE_KEYS.currentChapter) &&
     !shouldPersistBookStateToLocal()
   ) {
-    localStorage.removeItem(key);
+    removeStorageItem(key);
     return;
   }
-  localStorage.setItem(key, JSON.stringify(value));
+  saveStoredJSON(key, value);
 }
 
 function wait(ms) {

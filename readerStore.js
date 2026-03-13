@@ -1,3 +1,20 @@
+import { createAccountStore, DEFAULT_SYNC as ACCOUNT_DEFAULT_SYNC } from "./stores/accountStore.js";
+import {
+  createBillingStore,
+  DEFAULT_BILLING as BILLING_DEFAULT_BILLING,
+  DEFAULT_BILLING_ORDER as BILLING_DEFAULT_BILLING_ORDER,
+} from "./stores/billingStore.js";
+import { createReaderBaseState, createReaderStoreView } from "./stores/readerStore.js";
+import {
+  createSettingsStore,
+  DEFAULT_SETTINGS as SETTINGS_DEFAULT_SETTINGS,
+} from "./stores/settingsStore.js";
+import { createUiStoreState } from "./stores/uiStore.js";
+import {
+  loadJSON as loadStoredJSON,
+  saveJSON as saveStoredJSON,
+} from "./utils/storage.js";
+
 export const STORAGE_KEYS = {
   book: "yomuyomu_book_v3",
   currentChapter: "yomuyomu_current_chapter_v3",
@@ -11,25 +28,21 @@ export const STORAGE_KEYS = {
   billingOrder: "yomuyomu_billing_order_v1",
 };
 
-export const DEFAULT_SYNC = {
-  userId: "",
-  accountMode: "guest",
-  accountToken: "",
-  anonymousId: "",
-  registeredAt: 0,
-  lastCloudSyncAt: 0,
-  lastCloudSyncAction: "",
-  lastCloudSyncStatus: "",
-  lastCloudSyncMessage: "",
-};
+export const DEFAULT_SYNC = ACCOUNT_DEFAULT_SYNC;
+export const DEFAULT_BILLING = BILLING_DEFAULT_BILLING;
+export const DEFAULT_BILLING_ORDER = BILLING_DEFAULT_BILLING_ORDER;
+export const DEFAULT_SETTINGS = SETTINGS_DEFAULT_SETTINGS;
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 
 export const SAMPLE_BOOK = {
+  id: "sample-book",
+  sampleSlug: "sample-book",
   title: "示例小说",
   format: "txt",
   chapters: [
     {
+      id: "sample-ch-1",
       title: "第一章 春の駅",
       text: `夕方の駅前は、いつもより少しだけ静かだった。
 改札を出ると、春の匂いが風に混じっていた。
@@ -38,6 +51,7 @@ export const SAMPLE_BOOK = {
 ページをめくるたびに、知らない時代の声が聞こえる気がする。`,
     },
     {
+      id: "sample-ch-2",
       title: "第二章 雨の窓",
       text: `電車の窓には雨の粒が流れ、街の光がにじんで見えた。
 前の席では、小さな子どもが眠そうに母親の肩へ寄りかかっている。
@@ -45,6 +59,7 @@ export const SAMPLE_BOOK = {
 僕は鞄からノートを取り出し、今日の出来事を短く書き留めた。`,
     },
     {
+      id: "sample-ch-3",
       title: "第三章 夜の約束",
       text: `終点に着くころには、雨は細い霧に変わっていた。
 ホームで深呼吸すると、冷たい空気が肺の奥まで届いた。
@@ -73,20 +88,12 @@ export const MINI_DICT = {
   光: { reading: "ひかり", meaning: "光" },
   終点: { reading: "しゅうてん", meaning: "终点站" },
   ホーム: { reading: "ほーむ", meaning: "站台" },
-};
-
-export const DEFAULT_SETTINGS = {
-  fontSize: 21,
-  lineHeight: 1.9,
-  readerFont: "mincho",
-  readingMode: "scroll",
-  focusMode: false,
-  rightPanelTab: "vocab",
-  ttsRate: 1,
-  ttsVoice: "",
-  difficultyMode: "n1n2n3",
-  mojiScheme: "jp",
-  autoPageSeconds: 12,
+  待つ: { reading: "まつ", meaning: "等待" },
+  語彙: { reading: "ごい", meaning: "词汇" },
+  曖昧: { reading: "あいまい", meaning: "暧昧，含糊" },
+  原則: { reading: "げんそく", meaning: "原则" },
+  現地: { reading: "げんち", meaning: "现场，当地" },
+  見地: { reading: "けんち", meaning: "见地，观点" },
 };
 
 export const READER_FONT_MAP = {
@@ -104,6 +111,7 @@ export const KNOWN_WORD_MAX_LEN = 10;
 export const BLOCKED_POS_RE =
   /(助詞|助動詞|記号|連体詞|代名詞|接続詞|感動詞|接頭詞|接尾辞|非自立|補助)/;
 export const HIGHLIGHT_LEVELS = ["N1", "N2", "N3"];
+export const HARD_WORD_LEVELS = ["N1", "N2"];
 export const LEVEL_PRIORITY = { N1: 0, N2: 1, N3: 2 };
 export const MOJI_SCHEME_MAP = {
   jp: "mojisho://?search=",
@@ -114,165 +122,45 @@ export const MOJI_WEB_HOME = "https://www.mojidict.com";
 export const LOCAL_API_ORIGIN = "http://127.0.0.1:8000";
 export const MAC_DICT_SCHEME = "dict://";
 
-export const DEFAULT_BILLING = {
-  userId: "",
-  paymentEnabled: false,
-  plan: "free",
-  source: "manual",
-  entitlementPlan: "free",
-  subscriptionStatus: "",
-  billingCycle: "",
-  lastPaidChannel: "",
-  lastOrderId: "",
-  planExpireAt: 0,
-  graceUntilAt: 0,
-  paymentFailedAt: 0,
-  billingState: "",
-  accessState: "free",
-  accountMode: "guest",
-  appBaseUrl: "",
-  features: {
-    advancedImport: false,
-    cloudSync: false,
-    csvExportMaxRows: 60,
-    aiExplainDailyLimit: 3,
-  },
-  paymentChannels: {
-    stripe: false,
-    wechat: false,
-    alipay: false,
-  },
-  officialGateway: {
-    stripe: false,
-    wechat: false,
-    alipay: false,
-  },
-  stripe: {
-    checkoutReady: false,
-    portalReady: false,
-    paymentLinkReady: false,
-    paymentLink: "",
-    publishableKey: "",
-    paymentMode: "none",
-    intervals: {
-      monthly: false,
-      yearly: false,
-    },
-    defaultInterval: "monthly",
-    customerId: "",
-    subscriptionId: "",
-  },
-  manualPlanChangeEnabled: false,
-  manualPaymentConfirmEnabled: true,
-  priceFen: 3900,
-  orderExpireMinutes: 30,
-  aiExplainUsedToday: 0,
-  aiExplainRemainingToday: 3,
-  aiExplainCachedToday: 0,
-  aiExplainLimitedToday: 0,
-};
-
 export const PRO_FEATURE_HINT = "Pro：已解锁高级导入、云同步和全量导出。";
 export const FREE_FEATURE_HINT = "基础版：仅支持 TXT 导入，云同步与全量导出需升级。";
 
-export function loadJSON(key, fallback) {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
-  } catch {
-    return fallback;
-  }
-}
+export const loadJSON = loadStoredJSON;
+export const saveJSON = saveStoredJSON;
 
-export function saveJSON(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
-}
+const readerBaseState = createReaderBaseState({
+  loadJSON,
+  storageKeys: STORAGE_KEYS,
+});
+const { settings, settingsStore } = createSettingsStore({
+  loadJSON,
+  storageKeys: STORAGE_KEYS,
+});
+const { sync, accountStore } = createAccountStore({
+  loadJSON,
+  storageKeys: STORAGE_KEYS,
+});
+const { billing, billingOrder, billingStore } = createBillingStore({
+  loadJSON,
+  storageKeys: STORAGE_KEYS,
+});
+const uiState = createUiStoreState();
 
+// Legacy root state object kept for compatibility; reader modules should prefer state.*Store facades.
 export const state = {
-  apiOnline: false,
-  jmdictReady: false,
-  lastApiHealthCheckAt: 0,
-  apiHealthPromise: null,
-  tokenizerBackend: "fallback",
-  book: loadJSON(STORAGE_KEYS.book, null),
-  currentChapter: loadJSON(STORAGE_KEYS.currentChapter, 0),
-  vocab: loadJSON(STORAGE_KEYS.vocab, []),
-  notes: loadJSON(STORAGE_KEYS.notes, []),
-  bookmarks: loadJSON(STORAGE_KEYS.bookmarks, []),
-  settings: { ...DEFAULT_SETTINGS, ...loadJSON(STORAGE_KEYS.settings, {}) },
-  stats: loadJSON(STORAGE_KEYS.stats, {
-    lookupCount: 0,
-    totalSeconds: 0,
-  }),
-  sync: { ...DEFAULT_SYNC, ...loadJSON(STORAGE_KEYS.sync, DEFAULT_SYNC) },
-  billing: loadJSON(STORAGE_KEYS.billing, DEFAULT_BILLING),
-  billingOrder: loadJSON(STORAGE_KEYS.billingOrder, {
-    orderId: "",
-    status: "",
-    channel: "stripe",
-    interval: "monthly",
-    paymentMode: "",
-    payUrl: "",
-    amountFen: 0,
-    createdAt: 0,
-    updatedAt: 0,
-    expiresAt: 0,
-    paidSource: "",
-    externalTradeNo: "",
-    orderStatusPath: "",
-    verificationHint: "",
-    manualConfirmEnabled: false,
-    paidAt: 0,
-  }),
-  selected: null,
-  selectedSentence: null,
-  explain: {
-    loading: false,
-    sentenceId: "",
-    cached: false,
-    result: null,
-    error: "",
-  },
-  selectedRange: null,
-  lastSelectionLookupKey: "",
-  lastSelectionLookupAt: 0,
-  lastCursor: {
-    chapterId: "",
-    chapterIndex: 0,
-    paraIndex: 0,
-    charIndex: 0,
-  },
-  paragraphTokensCache: new Map(),
-  difficultyRangesCache: new Map(),
-  difficultyPending: new Set(),
-  jlptMap: {},
-  jlptSource: "none",
-  hardWordsByChapter: new Map(),
-  bookFrequencyStats: null,
-  analysisReady: false,
-  analysisRunId: 0,
-  analysisTimerId: null,
-  activeImportJobId: "",
-  toastTimerId: null,
-  registeringAccount: false,
-  loggingInAccount: false,
-  renderedChapterCount: 0,
-  scrollBaseChapter: 0,
-  scrollTicking: false,
-  reader: {
-    mode: "scroll",
-    currentChapterIndex: 0,
-    currentPageIndex: 0,
-    totalPagesInChapter: 1,
-  },
-  autoPageTimerId: null,
-  autoPageTicking: false,
-  pageNavInFlight: false,
-  pageTurnTimerId: null,
-  chapterTitleFlashTimerId: null,
-  timerId: null,
-  ttsUtterance: null,
+  ...readerBaseState,
+  settings,
+  settingsStore,
+  sync,
+  accountStore,
+  billing,
+  billingOrder,
+  billingStore,
+  ...uiState,
 };
+
+state.ui.sidePanel.tab = String(state.settings?.rightPanelTab || "vocab");
+state.readerStore = createReaderStoreView(state);
 
 export const els = {
   fileInput: document.getElementById("fileInput"),

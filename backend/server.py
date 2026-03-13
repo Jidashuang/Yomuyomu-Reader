@@ -28,10 +28,16 @@ from backend.config import (
     payment_channels,
 )
 from backend.services.backup_service import ensure_backup_runtime
+from backend.services.jmdict_bootstrap import ensure_jmdict_db
 
 
 def run_server(host: str, port: int) -> None:
     ensure_dirs()
+    try:
+        jmdict_ready = ensure_jmdict_db()
+    except Exception as exc:  # noqa: BLE001
+        jmdict_ready = False
+        print(f"JMDict bootstrap failed: {exc}")
     backup_status = ensure_backup_runtime(
         db_path=APP_DB_PATH,
         uploads_dir=IMPORT_JOBS_DIR,
@@ -45,7 +51,7 @@ def run_server(host: str, port: int) -> None:
     with ThreadingHTTPServer((host, port), handler_cls) as server:
         print(f"YomuYomu server running at http://{host}:{port}")
         print(f"Tokenizer backend: {ApiHandler.tokenizer.backend}")
-        print(f"JMDict DB: {DB_PATH} ({'found' if DB_PATH.exists() else 'not found'})")
+        print(f"JMDict DB: {DB_PATH} ({'ready' if jmdict_ready else 'not ready'})")
         print(
             "Backup runtime: "
             f"dir={BACKUP_DIR} "
