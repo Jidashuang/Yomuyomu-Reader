@@ -12,6 +12,5 @@ backend/data/*.log
 backend/data/JMdict_e
 backend/data/JMdict_e.gz
 backend/data/billing_orders.json
-!backend/data/jmdict.db
 !backend/data/jlpt_levels.json
 !backend/data/jlpt_levels.json.example
