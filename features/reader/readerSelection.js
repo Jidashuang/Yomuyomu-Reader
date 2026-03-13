@@ -124,18 +124,7 @@ export function createReaderSelection({
     const token = await findTokenAt(chapterId, paraIndex, paragraph, charIndex, para);
     if (token && canLookupToken(token)) {
       await selectToken(token, chapterId, chapterIndex, paraIndex);
-      return;
     }
-    const sentence = findSentenceAt(chapterId, paraIndex, charIndex);
-    if (!sentence) return;
-    await explainSentence(sentence, {
-      chapterId,
-      chapterIndex,
-      paraIndex,
-      bookId: state.book?.id || "",
-      chapterTitle: chapter.title,
-      paragraph,
-    });
   }
 
   function onReaderMouseUp() {
@@ -177,6 +166,7 @@ export function createReaderSelection({
     state.lastSelectionLookupKey = selectionKey;
     state.lastSelectionLookupAt = now;
 
+    const sentenceSelection = resolveSentenceSelection(chapterId, paraIndex, paragraph, selected);
     selection.removeAllRanges();
     setReaderCursor({
       chapterId,
@@ -193,6 +183,17 @@ export function createReaderSelection({
       renderHardWords();
       scheduleDifficultyPaint();
     }
+    if (sentenceSelection) {
+      await explainSentence(sentenceSelection, {
+        chapterId,
+        chapterIndex,
+        paraIndex,
+        bookId: state.book?.id || "",
+        chapterTitle: chapter.title,
+        paragraph,
+      });
+      return;
+    }
     await selectToken(
       {
         surface: selected.surface,
@@ -207,6 +208,56 @@ export function createReaderSelection({
       chapterIndex,
       paraIndex
     );
+  }
+
+  function resolveSentenceSelection(chapterId, paraIndex, paragraph, selected) {
+    const sentenceDelim = /[。！？!?]/;
+    const rawText = String(selected?.surface || "");
+    const selectedText = rawText.trim();
+    if (!selectedText) return null;
+    const selectedStart = Math.max(0, Number(selected?.start || 0));
+    const selectedEnd = Math.max(selectedStart + 1, Number(selected?.end || selectedStart + 1));
+    const selectedLength = selectedText.replace(/\s+/g, "").length;
+    const hasSentenceDelim = sentenceDelim.test(selectedText);
+
+    const sentenceAtStart = findSentenceAt(chapterId, paraIndex, selectedStart);
+    const sentenceAtEnd = findSentenceAt(chapterId, paraIndex, Math.max(selectedStart, selectedEnd - 1));
+    const sameSentence =
+      sentenceAtStart &&
+      sentenceAtEnd &&
+      String(sentenceAtStart.id || "") === String(sentenceAtEnd.id || "");
+
+    if (sameSentence) {
+      const base = sentenceAtStart;
+      const sentenceText = String(
+        base.text || String(paragraph || "").slice(Number(base.start || 0), Number(base.end || 0))
+      ).trim();
+      const sentenceLength = sentenceText.replace(/\s+/g, "").length;
+      const coversMostOfSentence =
+        sentenceLength > 0 &&
+        selectedLength >= Math.max(6, Math.ceil(sentenceLength * 0.68));
+      const startsNearSentenceStart = selectedStart <= Number(base.start || 0) + 1;
+      const endsNearSentenceEnd = selectedEnd >= Number(base.end || 0) - 1;
+      const nearFullSentence = startsNearSentenceStart && endsNearSentenceEnd;
+      if (nearFullSentence || coversMostOfSentence || (hasSentenceDelim && selectedLength >= 6)) {
+        return {
+          id: String(base.id || `p${paraIndex}-selection`),
+          start: Number(base.start || 0),
+          end: Number(base.end || selectedEnd),
+          text: sentenceText || selectedText,
+        };
+      }
+    }
+
+    if (hasSentenceDelim && selectedLength >= 8) {
+      return {
+        id: `p${paraIndex}-selection-${selectedStart}-${selectedEnd}`,
+        start: selectedStart,
+        end: selectedEnd,
+        text: selectedText,
+      };
+    }
+    return null;
   }
 
   function getSelectionParagraph(range) {

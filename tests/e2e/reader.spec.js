@@ -92,13 +92,23 @@ async function importTextBook(page, name, text, expectedTitle = name.replace(/\.
   await expect(page.locator("#bookTitle")).toContainText(expectedTitle, { timeout: 15_000 });
 }
 
-async function clickSentence(page, testId, charIndex = 0) {
+async function selectSentence(page, testId) {
   const sentence = page.getByTestId(testId);
   await expect(sentence).toBeVisible();
-  const chars = sentence.locator(".jp-char");
-  const count = await chars.count();
-  const targetIndex = charIndex >= 0 ? charIndex : Math.max(0, count + charIndex);
-  await chars.nth(targetIndex).click();
+  await sentence.evaluate((el) => {
+    const chars = Array.from(el.querySelectorAll(".jp-char"));
+    if (!chars.length) return;
+    const first = chars[0];
+    const last = chars[chars.length - 1];
+    const range = document.createRange();
+    range.setStart(first.firstChild || first, 0);
+    const lastLength = Math.max(1, String(last.textContent || "").length);
+    range.setEnd(last.firstChild || last, lastLength);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  });
 }
 
 test("billing checkout callback updates plan on success page", async ({ page }) => {
@@ -221,7 +231,7 @@ test("dictionary lookup happy path uses api result", async ({ page }) => {
 test("clicking the same sentence twice uses cached AI explain", async ({ page }) => {
   await bootWithUser(page, makeUser("cache"));
 
-  await clickSentence(page, "sentence-sample-ch-1-0-p0-s0", 0);
+  await selectSentence(page, "sentence-sample-ch-1-0-p0-s0");
   await expect(page.getByTestId("explain-status")).not.toContainText("AI 正在解释句子...");
   const firstExplainStatus = (await page.getByTestId("explain-status").textContent()) || "";
   const unavailableHints = [
@@ -236,7 +246,7 @@ test("clicking the same sentence twice uses cached AI explain", async ({ page })
     return;
   }
 
-  await clickSentence(page, "sentence-sample-ch-1-0-p0-s0", 0);
+  await selectSentence(page, "sentence-sample-ch-1-0-p0-s0");
   await expect(page.getByTestId("explain-status")).toContainText("命中缓存");
 });
 
@@ -250,7 +260,7 @@ test("free users are blocked on the sixth uncached explain", async ({ page }) =>
     `第一${seed}文です。第二${seed}文です。第三${seed}文です。第四${seed}文です。第五${seed}文です。第六${seed}文です。`
   );
 
-  await clickSentence(page, "sentence-ch-1-0-p0-s0", -1);
+  await selectSentence(page, "sentence-ch-1-0-p0-s0");
   await expect(page.getByTestId("explain-status")).not.toContainText("AI 正在解释句子...");
   const firstExplainStatus = (await page.getByTestId("explain-status").textContent()) || "";
   const unavailableHints = [
@@ -263,11 +273,11 @@ test("free users are blocked on the sixth uncached explain", async ({ page }) =>
   const limitReachedPattern = /已用完|today['’]s ai explanation limit|reached today/i;
 
   for (let index = 0; index < 5; index += 1) {
-    await clickSentence(page, `sentence-ch-1-0-p0-s${index}`, -1);
+    await selectSentence(page, `sentence-ch-1-0-p0-s${index}`);
     await expect(page.getByTestId("explain-status")).not.toContainText(limitReachedPattern);
   }
 
-  await clickSentence(page, "sentence-ch-1-0-p0-s5", -1);
+  await selectSentence(page, "sentence-ch-1-0-p0-s5");
   await expect(page.getByTestId("explain-status")).toContainText(limitReachedPattern);
 });
 

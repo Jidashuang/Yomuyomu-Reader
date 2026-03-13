@@ -761,11 +761,11 @@ textarea {
 
 .reader-settings-panel {
   position: absolute;
-  left: 0;
-  right: auto;
+  left: auto;
+  right: 0;
   top: calc(100% + 0.45rem);
-  transform: translateX(calc(0.95rem + var(--reader-settings-shift-x, 0px)));
-  z-index: 12;
+  transform: translateX(var(--reader-settings-shift-x, 0px));
+  z-index: 36;
   width: min(320px, calc(100vw - 1rem));
   display: grid;
   gap: 0.58rem;
@@ -1314,7 +1314,7 @@ input[type="range"] {
 @media (max-width: 760px) {
   .reader-settings-panel {
     width: min(320px, calc(100vw - 0.8rem));
-    transform: translateX(calc(0.75rem + var(--reader-settings-shift-x, 0px)));
+    transform: translateX(var(--reader-settings-shift-x, 0px));
   }
 }
 

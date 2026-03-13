@@ -299,7 +299,7 @@ export function createReaderUi({
       return;
     }
     if (!explain.result) {
-      els.explainStatus.textContent = "点击阅读区中的句子查看 AI 解释。";
+      els.explainStatus.textContent = "先点词，再拖选整句并松开，可触发 AI 解释。";
       els.explainTranslation.textContent = "";
       els.explainGrammar.innerHTML = "";
       els.explainNotes.innerHTML = "";
