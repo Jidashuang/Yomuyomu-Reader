@@ -1498,9 +1498,7 @@ function applyDifficultyToDom(chapterId, paraIndex, ranges) {
   if (!para) return;
   const chars = para.querySelectorAll(".jp-char");
   chars.forEach((charEl) => {
-    charEl.classList.remove("jlpt-n1");
-    charEl.classList.remove("jlpt-n2");
-    charEl.classList.remove("jlpt-n3");
+    charEl.classList.remove("jlpt-n1", "jlpt-n2", "jlpt-n3");
   });
   ranges.forEach((range) => {
     if (!shouldHighlightLevel(range.level)) return;
@@ -1547,10 +1545,14 @@ function shouldHighlightLevel(level) {
   return HIGHLIGHT_LEVELS.includes(level);
 }
 
+// Cache for getKnownWordsSorted — invalidated when state.vocab reference or
+// length changes (covers both reassignment via filter and in-place push).
+let _knownWordsSortedCache = null;
+let _knownWordsCacheRef = null;
+let _knownWordsCacheLen = -1;
+
 function getKnownRanges(text) {
-  const words = getKnownWords()
-    .filter(Boolean)
-    .sort((a, b) => b.length - a.length);
+  const words = getKnownWordsSorted();
   const ranges = [];
   for (let i = 0; i < text.length; i += 1) {
     const hit = words.find((word) => text.startsWith(word, i));
@@ -1580,6 +1582,24 @@ function getKnownWords() {
     if (lemma) out.add(lemma);
   });
   return [...out];
+}
+
+/**
+ * Returns the known-words list sorted longest-first, memoized until
+ * state.vocab reference changes (remove) or its length changes (push).
+ */
+function getKnownWordsSorted() {
+  if (
+    _knownWordsSortedCache !== null &&
+    _knownWordsCacheRef === state.vocab &&
+    _knownWordsCacheLen === state.vocab.length
+  ) {
+    return _knownWordsSortedCache;
+  }
+  _knownWordsSortedCache = getKnownWords().filter(Boolean).sort((a, b) => b.length - a.length);
+  _knownWordsCacheRef = state.vocab;
+  _knownWordsCacheLen = state.vocab.length;
+  return _knownWordsSortedCache;
 }
 
 // Reader selection/annotations/ui logic lives in features/reader modules.

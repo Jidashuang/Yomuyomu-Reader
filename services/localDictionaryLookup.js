@@ -236,12 +236,18 @@ export function alignMatchedWordToToken(token = {}, matchedWord = "") {
 
 function lookupFromVocab(candidates, vocab, readFn) {
   if (!Array.isArray(vocab) || !vocab.length) return null;
+  // Build a Map of normalized word/lemma → item once so each candidate
+  // lookup is O(1) instead of O(vocab_size). First occurrence wins, which
+  // matches the original vocab.find() behaviour.
+  const vocabIndex = new Map();
+  for (const item of vocab) {
+    const word = stripWordNoise(item?.word);
+    const lemma = stripWordNoise(item?.lemma);
+    if (word && !vocabIndex.has(word)) vocabIndex.set(word, item);
+    if (lemma && !vocabIndex.has(lemma)) vocabIndex.set(lemma, item);
+  }
   for (const key of candidates) {
-    const hit = vocab.find((item) => {
-      const word = stripWordNoise(item?.word);
-      const lemma = stripWordNoise(item?.lemma);
-      return word === key || lemma === key;
-    });
+    const hit = vocabIndex.get(key);
     if (!hit) continue;
     const matchedWord = stripWordNoise(hit.word) || stripWordNoise(hit.lemma) || key;
     const matchedLemma = stripWordNoise(hit.lemma) || matchedWord;
@@ -304,9 +310,16 @@ export function lookupLocalDictionary({
 }
 
 export function findExistingVocabEntry(vocab, word = "", lemma = "", dictionaryForm = "") {
+  const vocabList = Array.isArray(vocab) ? vocab : [];
+  if (!vocabList.length) return undefined;
   const selectedSet = new Set(buildLookupCandidates(word, lemma, dictionaryForm));
-  return (Array.isArray(vocab) ? vocab : []).find((item) => {
-    const itemCandidates = buildLookupCandidates(item?.word, item?.lemma);
-    return itemCandidates.some((candidate) => selectedSet.has(candidate));
+  return vocabList.find((item) => {
+    const itemWord = stripWordNoise(item?.word);
+    const itemLemma = stripWordNoise(item?.lemma);
+    // Fast path: direct match against the already-computed candidate set.
+    if (itemWord && selectedSet.has(itemWord)) return true;
+    if (itemLemma && selectedSet.has(itemLemma)) return true;
+    // Slow path: expand the item's own candidates and cross-check.
+    return buildLookupCandidates(item?.word, item?.lemma).some((c) => selectedSet.has(c));
   });
 }
